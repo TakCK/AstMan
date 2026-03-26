@@ -1,0 +1,867 @@
+﻿<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>사내 IT 자산관리</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="ambient"></div>
+  <header class="topbar">
+    <div>
+      <h1>사내 IT 자산관리</h1>
+      <p>통합 대시보드에서 하드웨어/소프트웨어를 분리 관리하고 사용자/관리자/LDAP 설정을 한 화면에서 운영하세요.</p>
+    </div>
+    <div class="user-area">
+      <span id="userInfo">로그인 필요</span>
+      <button id="logoutBtn" type="button" class="ghost-btn">로그아웃</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card" id="loginPanel">
+      <h2>로그인</h2>
+      <form id="loginForm" class="login-form">
+        <label>아이디<input id="username" value="admin" required /></label>
+        <label>비밀번호<input id="password" type="password" value="ChangeMe123!" required /></label>
+        <button type="submit" class="primary-btn">접속하기</button>
+      </form>
+      <p class="muted">운영 전 `ADMIN_PASSWORD`를 변경하세요.</p>
+    </section>
+
+    <section id="appPanel" class="hidden">
+      <nav class="tabs" id="tabs">
+        <button class="tab-btn active" type="button" data-tab="dashboard">대시보드</button>
+        <button class="tab-btn" type="button" data-tab="hardware">하드웨어</button>
+        <button class="tab-btn" type="button" data-tab="software">소프트웨어</button>
+        <button class="tab-btn" type="button" data-tab="settings">설정</button>
+      </nav>
+
+      <nav class="subtabs hidden" id="hardwareSubtabs">
+        <button class="subtab-btn active" type="button" data-hardware-tab="assets">자산리스트(검색)</button>
+        <button class="subtab-btn" type="button" data-hardware-tab="add">자산추가</button>
+        <button class="subtab-btn" type="button" data-hardware-tab="disposed">폐기완료</button>
+      </nav>
+
+      <section id="tab-dashboard" class="tab-section active">
+        <div id="summaryCards" class="summary-cards"></div>
+        <div class="split-grid dashboard-split-grid">
+          <article class="card">
+            <h3>상태별 현황</h3>
+            <div id="statusBoard" class="chip-board"></div>
+          </article>
+          <article class="card">
+            <h3>사용 분류별 현황</h3>
+            <div id="usageBoard" class="chip-board"></div>
+          </article>
+        </div>
+        <article class="card">
+          <h3>카테고리별 현황</h3>
+          <div id="categoryBoard" class="chip-board"></div>
+        </article>
+      </section>
+
+      <section id="tab-software" class="tab-section">
+        <div id="softwareSummaryCards" class="summary-cards"></div>
+
+        <nav class="subtabs hidden" id="softwareSubtabs">
+          <button class="subtab-btn active" type="button" data-software-tab="editor">라이선스 등록-수정</button>
+          <button class="subtab-btn" type="button" data-software-tab="list">리스트</button>
+          <button class="subtab-btn" type="button" data-software-tab="info">라이선스 정보 관리</button>
+          <button class="subtab-btn" type="button" data-software-tab="assignment">사용자 할당 관리</button>
+        </nav>
+
+        <section id="software-subtab-editor" class="software-subtab-section active">
+          <article class="card">
+            <h3>라이선스 등록/수정</h3>
+            <form id="softwareForm" class="asset-form">
+              <input id="swId" type="hidden" />
+              <label class="full-width">
+                <span class="muted">수정할 라이선스를 선택하면 기존 정보가 불러와집니다.</span>
+                <select id="swEditTarget">
+                  <option value="">신규 라이선스 등록</option>
+                </select>
+              </label>
+              <input id="swProductName" placeholder="라이선스명 (예: Microsoft 365 E3)" required />
+              <input id="swVendor" list="softwareVendorDatalist" placeholder="공급사 (예: Microsoft)" />
+              <select id="swLicenseType" required>
+                <option value="구독">구독</option>
+                <option value="영구">영구</option>
+              </select>
+              <input id="swTotalQuantity" type="number" min="1" step="1" value="1" placeholder="총 라이선스 수량" required />
+              <input id="swStartDate" type="date" />
+              <input id="swEndDate" type="date" />
+              <input id="swDrafter" placeholder="결재 기안자" />
+              <textarea id="swNotes" placeholder="비고"></textarea>
+              <div class="inline-actions full-width">
+                <button id="saveSoftwareBtn" type="submit" class="primary-btn">라이선스 저장</button>
+                <button id="cancelSoftwareEditBtn" type="button" class="ghost-btn">입력 초기화</button>
+              </div>
+            </form>
+            <p class="muted">SubsManage 기준 입력 흐름(라이선스명/시작일/만료일/기안자/비고)에 맞춰 운영 필드를 확장했습니다.</p>
+            <ul class="guide-list">
+              <li><strong>라이선스명</strong>: 계약/서비스 기준 대표 이름</li>
+              <li><strong>총 라이선스 수량</strong>: 구매 또는 보유한 전체 좌석 수</li>
+              <li><strong>시작일/만료일</strong>: 계약 유효 기간 관리</li>
+              <li><strong>결재 기안자</strong>: 비용 승인 책임자 추적</li>
+              <li><strong>비고</strong>: 계약 조건, 정산 메모 등 운영 기록</li>
+              <li><strong>사용자 할당</strong>: 별도 "사용자 할당 관리" 탭에서 전용 관리</li>
+            </ul>
+          </article>
+        </section>
+
+        <section id="software-subtab-list" class="software-subtab-section">
+          <article class="card">
+            <div class="card-head">
+              <h3>소프트웨어 라이선스 검색</h3>
+              <button id="reloadSoftwareBtn" type="button" class="ghost-btn">새로고침</button>
+            </div>
+            <form id="softwareFilterForm" class="filter-form software-filter-form">
+              <input id="softwareFilterQ" placeholder="라이선스명/공급사/기안자 검색" />
+              <select id="softwareFilterExpiring">
+                <option value="">전체 만료 상태</option>
+                <option value="30">만료 30일 내</option>
+                <option value="expired">만료됨</option>
+              </select>
+              <select id="softwareFilterType">
+                <option value="">전체 유형</option>
+              </select>
+              <select id="softwareFilterVendor">
+                <option value="">전체 공급사</option>
+              </select>
+              <button type="submit" class="primary-btn">검색</button>
+            </form>
+          </article>
+
+          <article class="card">
+            <h3>소프트웨어 라이선스 목록</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>라이선스명</th>
+                    <th>공급사</th>
+                    <th>유형</th>
+                    <th>할당/총수량</th>
+                    <th>시작일</th>
+                    <th>만료일</th>
+                    <th>기안자</th>
+                    <th>할당 사용자</th>
+                    <th>관리</th>
+                  </tr>
+                </thead>
+                <tbody id="softwareTableBody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section id="software-subtab-info" class="software-subtab-section">
+          <div class="split-grid software-manage-grid">
+            <article class="card">
+              <h3>라이선스 유형 관리</h3>
+              <p class="muted">등록-수정 탭의 유형 선택값을 관리합니다.</p>
+              <form id="softwareTypeForm" class="filter-form software-mini-form">
+                <input id="softwareTypeInput" placeholder="예: SaaS" required />
+                <button type="submit" class="primary-btn">유형 추가</button>
+              </form>
+              <div class="table-wrap setting-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>유형</th>
+                      <th>관리</th>
+                    </tr>
+                  </thead>
+                  <tbody id="softwareTypeTableBody"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="card">
+              <h3>공급사 템플릿 관리</h3>
+              <p class="muted">자주 사용하는 공급사를 등록해 입력을 빠르게 할 수 있습니다.</p>
+              <form id="softwareVendorForm" class="filter-form software-mini-form">
+                <input id="softwareVendorInput" placeholder="예: Microsoft" required />
+                <button type="submit" class="primary-btn">공급사 추가</button>
+              </form>
+              <div class="table-wrap setting-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>공급사</th>
+                      <th>관리</th>
+                    </tr>
+                  </thead>
+                  <tbody id="softwareVendorTableBody"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="software-subtab-assignment" class="software-subtab-section">
+          <article class="card">
+            <h3>사용자 할당 관리</h3>
+            <div class="software-assign-toolbar">
+              <label class="setting-field">
+                <span>대상 라이선스</span>
+                <select id="softwareAssignLicenseSelect">
+                  <option value="">라이선스를 선택하세요</option>
+                </select>
+              </label>
+              <label class="setting-field">
+                <span>사용자 검색 (ID/이름)</span>
+                <input id="softwareAssignSearch" placeholder="예: honggildong 또는 홍길동" />
+              </label>
+            </div>
+            <p id="softwareAssignSummary" class="muted">라이선스를 선택하면 사용자 할당 상태를 관리할 수 있습니다.</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>이름</th>
+                    <th>부서</th>
+                    <th>할당 상태</th>
+                    <th>관리</th>
+                  </tr>
+                </thead>
+                <tbody id="softwareAssignUserTableBody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+      </section>
+
+      <section id="tab-assets" class="tab-section">
+        <article class="card">
+          <div class="card-head">
+            <h3>자산 검색</h3>
+            <button id="reloadAssetsBtn" type="button" class="ghost-btn">새로고침</button>
+          </div>
+          <form id="assetFilterForm" class="filter-form">
+            <input id="filterQ" placeholder="자산코드/자산명/시리얼/사용자/담당자 검색" />
+            <select id="filterStatus">
+              <option value="">전체 상태</option>
+              <option value="사용중">사용중</option>
+              <option value="대기">대기</option>
+              <option value="폐기필요">폐기필요</option>
+              </select>
+            <select id="filterUsageType">
+              <option value="">전체 사용 분류</option>
+              <option value="주장비">주장비</option>
+              <option value="대여장비">대여장비</option>
+              <option value="프로젝트장비">프로젝트장비</option>
+              <option value="보조장비">보조장비</option>
+              <option value="기타장비">기타장비</option>
+              <option value="서버장비">서버장비</option>
+              <option value="네트워크장비">네트워크장비</option>
+            </select>
+            <select id="filterCategory"><option value="">전체 카테고리</option></select>
+            <input id="filterDepartment" placeholder="부서" />
+            <button type="submit" class="primary-btn">검색</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <h3>자산 목록</h3>
+            <button id="exportAssetsCsvBtn" type="button" class="ghost-btn">CSV 다운로드</button>
+          </div>
+          <p class="muted">행 클릭 시 상세 수정 팝업이 열리고, 우측 빠른수정에서 상태/분류를 즉시 반영할 수 있습니다.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>자산코드</th>
+                  <th>자산명</th>
+                  <th>카테고리</th>
+                  <th>사용 분류</th>
+                  <th>상태</th>
+                  <th>사용자</th>
+                  <th>부서</th>
+                  <th>위치</th>
+                  
+                  <th>빠른수정(상태/분류)</th>
+                  <th>이력</th>
+                </tr>
+              </thead>
+              <tbody id="assetTableBody"></tbody>
+            </table>
+          </div>
+          <div class="page-controls" id="assetsPagination">
+            <button id="assetsPrevPageBtn" type="button" class="ghost-btn">이전</button>
+            <span id="assetsPageInfo" class="muted">1 페이지</span>
+            <button id="assetsNextPageBtn" type="button" class="ghost-btn">다음</button>
+          </div>
+        </article>
+      </section>
+
+      <section id="tab-disposed" class="tab-section">
+        <article class="card">
+          <div class="card-head">
+            <h3>폐기 완료 장비</h3>
+            <button id="reloadDisposedBtn" type="button" class="ghost-btn">새로고침</button>
+          </div>
+          <p class="muted">폐기 완료된 자산만 별도로 표시됩니다. 각 행에서 폐기 취소로 복원하거나, 필요 시 영구 삭제할 수 있습니다.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>자산코드</th>
+                  <th>자산명</th>
+                  <th>카테고리</th>
+                  <th>상태</th>
+                  <th>최종폐기일자</th>
+                </tr>
+              </thead>
+              <tbody id="disposedTableBody"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="tab-add" class="tab-section">
+        <div class="split-grid">
+          <article class="card">
+            <h3>자산 등록</h3>
+            <form id="addAssetForm" class="asset-form">
+              <input id="addName" placeholder="자산명" required />
+              <select id="addCategory" required></select>
+              <select id="addUsageType" required>
+                <option value="주장비">주장비</option>
+                <option value="대여장비">대여장비</option>
+                <option value="프로젝트장비">프로젝트장비</option>
+                <option value="보조장비">보조장비</option>
+                <option value="기타장비">기타장비</option>
+                <option value="서버장비">서버장비</option>
+                <option value="네트워크장비">네트워크장비</option>
+              </select>
+              <div id="addRentalFields" class="rental-fields full-width hidden">
+                <label>
+                  대여 시작일자
+                  <input id="addRentalStartDate" type="date" />
+                </label>
+                <label>
+                  대여 만료일자
+                  <input id="addRentalEndDate" type="date" />
+                </label>
+              </div>
+              <select id="addStatus" required>
+                <option value="대기">대기</option>
+                <option value="사용중">사용중</option>
+                <option value="폐기필요">폐기필요</option>
+                <option value="폐기완료">폐기완료</option>
+              </select>
+              <input id="addManager" list="adminUserDatalist" value="미지정" placeholder="관리자 ID 또는 이름 검색" required />
+              <input id="addOwner" value="미지정" placeholder="ID 또는 이름으로 검색 (예: honggildong | 홍길동)" required autocomplete="off" />
+              <input id="addDepartment" placeholder="부서" />
+              <input id="addLocation" placeholder="위치(선택, 미입력 시 미지정)" />
+              <input id="addManufacturer" placeholder="제조사" />
+              <input id="addModelName" placeholder="모델명" />
+              <input id="addSerialNumber" placeholder="시리얼번호(선택)" />
+              <div class="asset-code-tools full-width">
+                <input id="addAssetCode" placeholder="자산코드(직접입력 가능)" />
+                <button id="addGenerateAssetCodeBtn" type="button" class="ghost-btn">코드 자동생성</button>
+              </div>
+              <input id="addVendor" placeholder="구매처" />
+              <input id="addPurchaseDate" type="date" />
+              <input id="addWarrantyExpiry" type="date" />
+              <input id="addPurchaseCost" type="number" min="0" step="0.01" placeholder="구매금액" />
+              <textarea id="addNotes" placeholder="메모"></textarea>
+              <button type="submit" class="primary-btn">자산 등록</button>
+            </form>
+          </article>
+
+          <article class="card">
+            <h3>입력 항목 안내</h3>
+            <ul class="guide-list">
+              <li><strong>자산명</strong>: 자산을 구분하는 대표 이름</li>
+              <li><strong>카테고리</strong>: 장비 종류(설정 탭에서 목록/토큰 관리)</li>
+              <li><strong>사용 분류</strong>: 주장비/대여장비/프로젝트장비 등 운영 목적</li>
+              <li><strong>대여 시작일자</strong>: 대여장비일 때 실제 대여 시작일</li>
+              <li><strong>대여 만료일자</strong>: 대여장비일 때 반납/계약 종료 예정일</li>
+              <li><strong>상태</strong>: 사용중/대기/폐기필요/폐기완료 상태</li>
+              <li><strong>사용자</strong>: 장비를 실제 사용하는 사람(사용중일 때 필수)</li>
+              <li><strong>담당자</strong>: 자산 관리 책임자(운영/구매/정산 담당)</li>
+              <li><strong>부서</strong>: 자산이 소속된 조직 또는 팀</li>
+              <li><strong>위치</strong>: 자산의 현재 물리적 보관 위치</li>
+              <li><strong>제조사</strong>: 벤더/브랜드 정보</li>
+              <li><strong>모델명</strong>: 정확한 모델 식별 정보</li>
+              <li><strong>시리얼번호</strong>: 제조사 고유 식별 번호(중복 불가)</li>
+              <li><strong>자산코드</strong>: 내부 자산 식별 코드(설정 탭 양식 기준 자동생성 가능)</li>
+              <li><strong>구매처</strong>: 구매한 업체 또는 파트너사</li>
+              <li><strong>구매일</strong>: 실제 구매 일자</li>
+              <li><strong>보증만료일</strong>: AS/보증 종료 예정일</li>
+              <li><strong>구매금액</strong>: 내부 기준 자산 취득가</li>
+              <li><strong>메모</strong>: 점검, 특이사항, 운영 참고 정보</li>
+              <li><strong>상태 변경 규칙</strong>: 대기/폐기계열은 사용자 자동 해제, 사용중은 사용자 지정 필요</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      
+            <section id="tab-settings" class="tab-section">
+        <nav class="subtabs settings-subtabs" id="settingsSubtabs">
+          <button class="subtab-btn active" type="button" data-settings-tab="general">일반 설정</button>
+          <button class="subtab-btn" type="button" data-settings-tab="users" data-admin-only="1">사용자</button>
+          <button class="subtab-btn" type="button" data-settings-tab="admins" data-admin-only="1">관리자</button>
+          <button class="subtab-btn" type="button" data-settings-tab="ldap" data-admin-only="1">LDAP</button>
+        </nav>
+
+        <section id="settings-subtab-general" class="settings-subtab-section active">
+          <div class="split-grid">
+            <article class="card">
+              <h3>자산코드 설정</h3>
+              <label class="setting-field">
+                <span>코드 양식</span>
+                <input id="settingAssetCodeTemplate" placeholder="예: {CAT}-{YYYY}-{SEQ4}" />
+              </label>
+              <ul class="guide-list token-guide">
+                <li><strong>{CAT}</strong>: 카테고리별 토큰값 (설정 탭의 카테고리 관리에서 지정)</li>
+                <li><strong>{USG}</strong>: 사용 분류 약어 (예: 주장비=PRI, 서버장비=SRV)</li>
+                <li><strong>{YYYY}/{YY}</strong>: 연도 4자리/2자리</li>
+                <li><strong>{MM}/{DD}</strong>: 월/일 2자리</li>
+                <li><strong>{SEQ}</strong>: 일자 기준 4자리 자동 증가 번호</li>
+                <li><strong>{SEQ4}</strong>: 지정 자리수 증가 번호 (예: {SEQ3}, {SEQ5})</li>
+                <li><strong>{RAND4}</strong>: 4자리 랜덤 숫자</li>
+              </ul>
+              <div class="setting-actions">
+                <button id="saveCodeSettingBtn" type="button" class="primary-btn">코드 양식 저장</button>
+                <button id="previewCodeSettingBtn" type="button" class="ghost-btn">미리보기 갱신</button>
+              </div>
+              <p id="codePreviewText" class="muted">미리보기: -</p>
+            </article>
+
+            <article class="card">
+              <h3>기본값 설정</h3>
+              <label class="setting-field">
+                <span>기본 사용자</span>
+                <input id="settingDefaultOwner" placeholder="예: 미지정" />
+              </label>
+              <label class="setting-field">
+                <span>기본 담당자</span>
+                <input id="settingDefaultManager" placeholder="예: 미지정" />
+              </label>
+              <button id="saveDefaultSettingBtn" type="button" class="primary-btn">기본값 저장</button>
+            </article>
+
+            <article class="card">
+              <h3>카테고리 / {CAT} 토큰 설정</h3>
+              <div class="category-setting-inline">
+                <label class="setting-field">
+                  <span>카테고리명</span>
+                  <input id="settingCategoryName" placeholder="예: 노트북" />
+                </label>
+                <label class="setting-field">
+                  <span>{CAT} 토큰값</span>
+                  <input id="settingCategoryToken" placeholder="예: NB (미입력 시 자동생성)" />
+                </label>
+                <div class="setting-actions row-actions">
+                  <button id="addCategorySettingBtn" type="button" class="primary-btn">추가/수정</button>
+                  <button id="clearCategorySettingBtn" type="button" class="ghost-btn">입력초기화</button>
+                </div>
+              </div>
+              <p class="inline-hint">카테고리를 추가하면 자산 등록/수정의 카테고리 선택 목록과 {CAT} 토큰 생성값에 함께 반영됩니다.</p>
+              <div class="table-wrap setting-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>카테고리</th>
+                      <th>{CAT} 토큰</th>
+                      <th>관리</th>
+                    </tr>
+                  </thead>
+                  <tbody id="settingCategoryTableBody"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+
+          <article class="card">
+            <h3>상태 전환 규칙</h3>
+            <ul class="guide-list">
+              <li><strong>대기/폐기필요/폐기완료</strong>로 변경 시 사용자 할당이 자동 해제됩니다.</li>
+              <li><strong>사용중</strong>으로 변경 시 사용자 입력 팝업이 자동으로 열립니다.</li>
+            </ul>
+          </article>
+        </section>
+
+        <section id="settings-subtab-users" class="settings-subtab-section" data-admin-only="1">
+          <article class="card">
+            <div class="card-head">
+              <h3>자산 할당 사용자 관리</h3>
+              <button id="reloadUsersBtn" type="button" class="ghost-btn">새로고침</button>
+            </div>
+            <p class="muted">이 탭의 사용자는 로그인 계정이 아니어도 되며, 자산 할당 대상자로만 사용됩니다.</p>
+            <form id="userCreateForm" class="filter-form user-manage-form">
+              <input id="newUserUsername" placeholder="사용자 ID (예: honggildong)" required />
+              <input id="newUserDisplayName" placeholder="이름 (예: 홍길동)" />
+              <input id="newUserEmail" placeholder="이메일 (선택)" />
+              <button type="submit" class="primary-btn">사용자 추가</button>
+            </form>
+            <form id="userFilterForm" class="filter-form user-manage-form">
+              <input id="userSearchQ" placeholder="ID/이름 검색" />
+              <button type="submit" class="ghost-btn">검색</button>
+            </form>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>이름</th>
+                    <th>이메일</th>
+                    <th>부서</th>
+                    <th>상태</th>
+                    <th>출처</th>
+                    <th>관리</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTableBody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section id="settings-subtab-admins" class="settings-subtab-section" data-admin-only="1">
+          <article class="card">
+            <div class="card-head">
+              <h3>관리자 계정 관리</h3>
+              <button id="reloadAdminsBtn" type="button" class="ghost-btn">새로고침</button>
+            </div>
+            <form id="adminCreateForm" class="filter-form user-manage-form">
+              <input id="newAdminUsername" placeholder="새 관리자 ID" required />
+              <input id="newAdminPassword" type="password" minlength="8" placeholder="초기 비밀번호(8자 이상)" required />
+              <button type="submit" class="primary-btn">관리자 추가</button>
+            </form>
+            <form id="adminFilterForm" class="filter-form user-manage-form">
+              <input id="adminSearchQ" placeholder="ID 검색" />
+              <button type="submit" class="ghost-btn">검색</button>
+            </form>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>역할</th>
+                    <th>상태</th>
+                    <th>생성일</th>
+                    <th>관리</th>
+                  </tr>
+                </thead>
+                <tbody id="adminsTableBody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section id="settings-subtab-ldap" class="settings-subtab-section" data-admin-only="1">
+          <div class="split-grid">
+            <article class="card">
+              <h3>LDAP 연결 설정</h3>
+              <form id="ldapConfigForm" class="ldap-form-grid">
+                <label class="setting-field">
+                  <span>LDAP 서버 주소</span>
+                  <input id="ldapServerUrl" placeholder="예: ldap.company.local 또는 ldaps://ad.company.local" />
+                </label>
+                <label class="setting-field">
+                  <span>포트</span>
+                  <input id="ldapPort" type="number" min="1" max="65535" placeholder="기본: 389 / 636" />
+                </label>
+                <label class="setting-field ldap-checkbox-field">
+                  <span>SSL 사용</span>
+                  <input id="ldapUseSsl" type="checkbox" />
+                </label>
+                <label class="setting-field">
+                  <span>Bind DN</span>
+                  <input id="ldapBindDn" placeholder="예: CN=svc_ldap,OU=Service,DC=company,DC=local" />
+                </label>
+                <label class="setting-field">
+                  <span>Base DN</span>
+                  <input id="ldapBaseDn" placeholder="예: DC=company,DC=local" />
+                </label>
+                <label class="setting-field">
+                  <span>계정 ID 속성</span>
+                  <input id="ldapUserIdAttr" placeholder="기본: sAMAccountName" />
+                </label>
+                <label class="setting-field">
+                  <span>이름 속성</span>
+                  <input id="ldapUserNameAttr" placeholder="기본: displayName" />
+                </label>
+                <label class="setting-field">
+                  <span>이메일 속성</span>
+                  <input id="ldapUserEmailAttr" placeholder="기본: mail" />
+                </label>
+                <label class="setting-field">
+                  <span>검색/동기화 개수 제한</span>
+                  <input id="ldapSizeLimit" type="number" min="50" max="5000" value="1000" />
+                </label>
+              </form>
+              <div class="ldap-actions">
+                <button id="openLdapPasswordModalBtn" type="button" class="ghost-btn">Bind 비밀번호 입력</button>
+                <span id="ldapPasswordStatus" class="muted">비밀번호 미설정</span>
+              </div>
+              <div class="ldap-actions">
+                <button id="saveLdapConfigBtn" type="button" class="primary-btn">LDAP 설정 저장</button>
+                <button id="testLdapBtn" type="button" class="ghost-btn">연결 테스트</button>
+              </div>
+              <p class="muted">Bind 비밀번호는 로컬 저장되지 않으며, 현재 브라우저 세션 메모리에서만 사용됩니다.</p>
+            </article>
+
+            <article class="card">
+              <h3>AD 사용자 검색 / 동기화</h3>
+              <form id="ldapSearchForm" class="filter-form ldap-search-form">
+                <input id="ldapQuery" placeholder="ID/이름/이메일 검색" />
+                <button type="submit" class="primary-btn">LDAP 검색</button>
+              </form>
+              <div class="ldap-actions">
+                <button id="ldapImportSearchResultBtn" type="button" class="ghost-btn">검색결과 사용자탭 일괄 반영</button>
+              </div>
+              <div class="ldap-actions">
+                <button id="ldapSyncNowBtn" type="button" class="primary-btn">지금 동기화</button>
+                <label class="ldap-inline-check"><input id="ldapSavePasswordForSchedule" type="checkbox" /> 스케줄 실행용으로 현재 비밀번호 사용</label>
+              </div>
+              <div class="ldap-schedule-box">
+                <h4>동기화 스케줄</h4>
+                <form id="ldapScheduleForm" class="ldap-schedule-form">
+                  <label class="setting-field ldap-checkbox-field">
+                    <span>스케줄 사용</span>
+                    <input id="ldapScheduleEnabled" type="checkbox" />
+                  </label>
+                  <label class="setting-field">
+                    <span>주기(분)</span>
+                    <input id="ldapScheduleInterval" type="number" min="5" max="1440" value="60" />
+                  </label>
+                  <button id="saveLdapScheduleBtn" type="submit" class="ghost-btn">스케줄 저장</button>
+                </form>
+                <p id="ldapScheduleInfo" class="muted">최근 동기화: 없음</p>
+              </div>
+              <p id="ldapResultInfo" class="muted">검색 결과가 없습니다.</p>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>이름</th>
+                      <th>이메일</th>
+                      <th>부서</th>
+                      <th>직책</th>
+                      <th>적용</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ldapResultBody"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <div id="editModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-body">
+      <div class="modal-sticky-head">
+        <h3>자산 수정</h3>
+        <div class="modal-head-actions">
+          <button id="submitEditModalBtn" type="submit" form="editAssetForm" class="primary-btn">변경 반영</button>
+          <button id="closeEditModalBtn" type="button" class="ghost-btn">닫기</button>
+        </div>
+      </div>
+      <form id="editAssetForm" class="asset-form compact">
+        <input id="editId" type="hidden" />
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">자산명</span><span class="field-hint">대표 식별 이름</span></span>
+          <input id="editName" placeholder="예: 업무용 노트북" required />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">카테고리</span><span class="field-hint">생성 시 고정(변경 불가)</span></span>
+          <select id="editCategory" required disabled></select>
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">사용 분류</span><span class="field-hint">운용 목적</span></span>
+          <select id="editUsageType" required>
+            <option value="주장비">주장비</option>
+            <option value="대여장비">대여장비</option>
+            <option value="프로젝트장비">프로젝트장비</option>
+            <option value="보조장비">보조장비</option>
+            <option value="기타장비">기타장비</option>
+            <option value="서버장비">서버장비</option>
+            <option value="네트워크장비">네트워크장비</option>
+          </select>
+        </label>
+
+        <div id="editRentalFields" class="hidden">
+          <label class="field-block">
+            <span class="field-head"><span class="field-title">대여 시작일자</span><span class="field-hint">대여 사용 시작일</span></span>
+            <input id="editRentalStartDate" type="date" />
+          </label>
+
+          <label class="field-block">
+            <span class="field-head"><span class="field-title">대여 만료일자</span><span class="field-hint">반납/계약 종료 예정일</span></span>
+            <input id="editRentalEndDate" type="date" />
+          </label>
+        </div>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">상태</span><span class="field-hint">사용/대기/폐기 상태</span></span>
+          <select id="editStatus" required>
+            <option value="대기">대기</option>
+            <option value="사용중">사용중</option>
+            <option value="폐기필요">폐기필요</option>
+            <option value="폐기완료">폐기완료</option>
+          </select>
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">담당자</span><span class="field-hint">관리 책임자</span></span>
+          <input id="editManager" list="adminUserDatalist" placeholder="관리자 ID 또는 이름 검색" required />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">사용자</span><span class="field-hint">실사용자</span></span>
+          <input id="editOwner" placeholder="ID 또는 이름으로 검색" required autocomplete="off" />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">부서</span><span class="field-hint">사용 조직</span></span>
+          <input id="editDepartment" placeholder="예: 개발팀" />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">위치</span><span class="field-hint">물리적 보관 위치</span></span>
+          <input id="editLocation" placeholder="예: 서울 본사 3층 (미입력 시 미지정)" />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">제조사</span><span class="field-hint">벤더 정보</span></span>
+          <input id="editManufacturer" placeholder="예: Lenovo" />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">모델명</span><span class="field-hint">정확한 모델명</span></span>
+          <input id="editModelName" placeholder="예: ThinkPad T14" />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">시리얼번호</span><span class="field-hint">고유 식별 번호</span></span>
+          <input id="editSerialNumber" placeholder="예: ABCD-1234 (선택)" />
+        </label>
+
+        <div class="field-block">
+          <span class="field-head"><span class="field-title">자산코드</span><span class="field-hint">설정 탭 양식 기준 생성</span></span>
+          <div class="asset-code-tools">
+            <input id="editAssetCode" placeholder="예: AST-00125" />
+            <button id="editGenerateAssetCodeBtn" type="button" class="ghost-btn">코드 자동생성</button>
+          </div>
+        </div>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">구매처</span><span class="field-hint">구매 업체</span></span>
+          <input id="editVendor" placeholder="예: 공식 리셀러" />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">구매일</span><span class="field-hint">실구매 일자</span></span>
+          <input id="editPurchaseDate" type="date" />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">보증만료일</span><span class="field-hint">보증 종료 일자</span></span>
+          <input id="editWarrantyExpiry" type="date" />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">구매금액</span><span class="field-hint">내부 기준 금액</span></span>
+          <input id="editPurchaseCost" type="number" min="0" step="0.01" placeholder="예: 1500000" />
+        </label>
+
+        <label class="field-block">
+          <span class="field-head"><span class="field-title">메모</span><span class="field-hint">특이사항/점검사항</span></span>
+          <textarea id="editNotes" placeholder="예: 2026-03-25 점검 완료"></textarea>
+        </label>
+
+      </form>
+      <div>
+        <h4>변경 이력</h4>
+        <p class="muted">최신 변경부터 순서대로 표시됩니다.</p>
+        <div id="editHistoryBox" class="history-box"></div>
+      </div>
+    </div>
+  </div>
+
+  
+  <div id="ownerAssignModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-body small-modal-body">
+      <h3>사용자 할당</h3>
+      <p class="muted">상태를 사용중으로 변경하려면 사용자 지정이 필요합니다. ID 또는 이름으로 검색해서 선택하세요.</p>
+      <input id="ownerAssignInput" placeholder="예: honggildong | 홍길동" autocomplete="off" />
+      <div class="modal-head-actions inline-right">
+        <button id="ownerAssignConfirmBtn" type="button" class="primary-btn">적용</button>
+        <button id="ownerAssignCancelBtn" type="button" class="ghost-btn">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ldapPasswordModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-body small-modal-body">
+      <h3>LDAP Bind 비밀번호 입력</h3>
+      <p class="muted">비밀번호는 브라우저 로컬 스토리지에 저장되지 않고, 현재 세션 메모리에서만 사용됩니다.</p>
+      <input id="ldapSessionPasswordInput" type="password" placeholder="Bind 비밀번호" />
+      <div class="modal-head-actions inline-right">
+        <button id="ldapPasswordConfirmBtn" type="button" class="primary-btn">적용</button>
+        <button id="ldapPasswordCancelBtn" type="button" class="ghost-btn">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <datalist id="directoryUserDatalist"></datalist>
+  <datalist id="adminUserDatalist"></datalist>
+  <datalist id="softwareVendorDatalist"></datalist>
+<div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
