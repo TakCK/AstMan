@@ -125,7 +125,9 @@ const state = {
   user: null,
   assets: [],
   disposedAssets: [],
-  softwareLicenses: [],`r`n  softwareLicensesAll: [],`r`n  currentAssetId: null,
+  softwareLicenses: [],
+  softwareLicensesAll: [],
+  currentAssetId: null,
   directoryUsers: [],
   lastLdapSearchUsers: [],
   managedUsers: [],
@@ -221,7 +223,9 @@ const loginPanel = document.getElementById("loginPanel");
 const appPanel = document.getElementById("appPanel");
 const userInfo = document.getElementById("userInfo");
 const tabs = document.getElementById("tabs");
-const hardwareSubtabs = document.getElementById("hardwareSubtabs");`r`nconst softwareSubtabs = document.getElementById("softwareSubtabs");`r`nconst settingsSubtabs = document.getElementById("settingsSubtabs");
+const hardwareSubtabs = document.getElementById("hardwareSubtabs");
+const softwareSubtabs = document.getElementById("softwareSubtabs");
+const settingsSubtabs = document.getElementById("settingsSubtabs");
 const toast = document.getElementById("toast");
 const summaryCards = document.getElementById("summaryCards");
 const softwareSummaryCards = document.getElementById("softwareSummaryCards");
@@ -2277,7 +2281,9 @@ function applySettingInputs() {
   syncFilterCategorySelect();
   renderCategorySettingTable();
   setCategorySettingInputs();
-  updateCodePreview();`r`n  applyLdapInputs();`r`n  syncSoftwareMetaControls();
+  updateCodePreview();
+  applyLdapInputs();
+  syncSoftwareMetaControls();
 }
 
 function updateCodePreview() {
@@ -2291,7 +2297,9 @@ function persistSettings() {
   localStorage.setItem(STORAGE_KEYS.defaultOwner, state.settings.defaultOwner);
   localStorage.setItem(STORAGE_KEYS.defaultManager, state.settings.defaultManager);
   localStorage.setItem(STORAGE_KEYS.categories, JSON.stringify(state.settings.categories));
-  localStorage.setItem(STORAGE_KEYS.ldapConfig, JSON.stringify(state.settings.ldapConfig));`r`n  localStorage.setItem(STORAGE_KEYS.softwareLicenseTypes, JSON.stringify(state.settings.softwareLicenseTypes));`r`n  localStorage.setItem(STORAGE_KEYS.softwareVendors, JSON.stringify(state.settings.softwareVendors));
+  localStorage.setItem(STORAGE_KEYS.ldapConfig, JSON.stringify(state.settings.ldapConfig));
+  localStorage.setItem(STORAGE_KEYS.softwareLicenseTypes, JSON.stringify(state.settings.softwareLicenseTypes));
+  localStorage.setItem(STORAGE_KEYS.softwareVendors, JSON.stringify(state.settings.softwareVendors));
 }
 
 function resetAddForm() {
@@ -2555,6 +2563,20 @@ hardwareSubtabs?.addEventListener("click", async (event) => {
   }
 });
 
+softwareSubtabs?.addEventListener("click", async (event) => {
+  const button = event.target.closest(".subtab-btn[data-software-tab]");
+  if (!button) return;
+
+  const subtab = button.dataset.softwareTab || "editor";
+  activateSoftwareSubtab(subtab);
+
+  try {
+    if (!state.token) return;
+    await loadSoftwareLicenses();
+  } catch (error) {
+    showToast(error.message);
+  }
+});
 settingsSubtabs?.addEventListener("click", async (event) => {
   const button = event.target.closest(".subtab-btn[data-settings-tab]");
   if (!button) return;
@@ -2647,14 +2669,123 @@ document.getElementById("softwareForm")?.addEventListener("submit", async (event
   }
 });
 
+document.getElementById("swEditTarget")?.addEventListener("change", (event) => {
+  const id = Number(event.target.value || 0);
+  if (!id) {
+    resetSoftwareForm();
+    return;
+  }
+
+  const row = findSoftwareLicenseById(id);
+  if (!row) {
+    showToast("선택한 라이선스를 찾을 수 없습니다.");
+    resetSoftwareForm();
+    return;
+  }
+
+  fillSoftwareForm(row);
+});
+
+document.getElementById("softwareTypeForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const input = document.getElementById("softwareTypeInput");
+  const value = String(input?.value || "").trim();
+  if (!value) return;
+
+  state.settings.softwareLicenseTypes = normalizeSoftwareMetaList(
+    [...(state.settings.softwareLicenseTypes || []), value],
+    DEFAULTS.softwareLicenseTypes,
+  );
+  persistSettings();
+  syncSoftwareMetaControls();
+  if (input) input.value = "";
+  showToast("라이선스 유형을 저장했습니다.");
+});
+
+document.getElementById("softwareVendorForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const input = document.getElementById("softwareVendorInput");
+  const value = String(input?.value || "").trim();
+  if (!value) return;
+
+  state.settings.softwareVendors = normalizeSoftwareMetaList(
+    [...(state.settings.softwareVendors || []), value],
+    DEFAULTS.softwareVendors,
+  );
+  persistSettings();
+  syncSoftwareMetaControls();
+  if (input) input.value = "";
+  showToast("공급사 템플릿을 저장했습니다.");
+});
+
+function handleSoftwareMetaRemove(kind, value) {
+  const targetValue = String(value || "").trim();
+  if (!targetValue) return;
+
+  if (kind === "type") {
+    state.settings.softwareLicenseTypes = normalizeSoftwareMetaList(
+      (state.settings.softwareLicenseTypes || []).filter((item) => String(item || "").trim() !== targetValue),
+      DEFAULTS.softwareLicenseTypes,
+    );
+    persistSettings();
+    syncSoftwareMetaControls();
+    showToast("라이선스 유형을 삭제했습니다.");
+    return;
+  }
+
+  state.settings.softwareVendors = normalizeSoftwareMetaList(
+    (state.settings.softwareVendors || []).filter((item) => String(item || "").trim() !== targetValue),
+    DEFAULTS.softwareVendors,
+  );
+  persistSettings();
+  syncSoftwareMetaControls();
+  showToast("공급사 템플릿을 삭제했습니다.");
+}
+
+softwareTypeTableBody?.addEventListener("click", (event) => {
+  const button = event.target.closest(".software-meta-remove-btn");
+  if (!button) return;
+  handleSoftwareMetaRemove(button.dataset.kind || "type", button.dataset.value || "");
+});
+
+softwareVendorTableBody?.addEventListener("click", (event) => {
+  const button = event.target.closest(".software-meta-remove-btn");
+  if (!button) return;
+  handleSoftwareMetaRemove(button.dataset.kind || "vendor", button.dataset.value || "");
+});
+
+document.getElementById("softwareAssignLicenseSelect")?.addEventListener("change", () => {
+  renderSoftwareAssignmentPanel();
+});
+
+document.getElementById("softwareAssignSearch")?.addEventListener("input", () => {
+  renderSoftwareAssignmentPanel();
+});
+
+softwareAssignUserTableBody?.addEventListener("click", async (event) => {
+  const button = event.target.closest(".software-assignment-action-btn");
+  if (!button) return;
+
+  const licenseId = Number(button.dataset.licenseId || 0);
+  const username = button.dataset.username || "";
+  const action = button.dataset.action || "assign";
+
+  try {
+    await toggleSoftwareAssignment(licenseId, username, action);
+    showToast(action === "assign" ? "사용자를 할당했습니다." : "사용자 할당을 해제했습니다.");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
 softwareTableBody?.addEventListener("click", async (event) => {
   const editBtn = event.target.closest(".software-edit-btn");
   if (editBtn) {
     const id = Number(editBtn.dataset.id || 0);
-    const row = state.softwareLicenses.find((item) => Number(item.id) === id);
+    const row = findSoftwareLicenseById(id);
     if (!row) return;
     fillSoftwareForm(row);
     activateTab("software");
+    activateSoftwareSubtab("editor");
     return;
   }
 
@@ -3112,14 +3243,18 @@ document.getElementById("saveCodeSettingBtn").addEventListener("click", () => {
   const template = document.getElementById("settingAssetCodeTemplate").value.trim() || DEFAULTS.codeTemplate;
   state.settings.codeTemplate = template;
   persistSettings();
-  updateCodePreview();`r`n  applyLdapInputs();`r`n  syncSoftwareMetaControls();
+  updateCodePreview();
+  applyLdapInputs();
+  syncSoftwareMetaControls();
   showToast("자산코드 양식을 저장했습니다.");
 });
 
 document.getElementById("previewCodeSettingBtn").addEventListener("click", () => {
   const template = document.getElementById("settingAssetCodeTemplate").value.trim() || DEFAULTS.codeTemplate;
   state.settings.codeTemplate = template;
-  updateCodePreview();`r`n  applyLdapInputs();`r`n  syncSoftwareMetaControls();
+  updateCodePreview();
+  applyLdapInputs();
+  syncSoftwareMetaControls();
 });
 
 document.getElementById("saveDefaultSettingBtn").addEventListener("click", () => {
@@ -3162,7 +3297,9 @@ document.getElementById("addCategorySettingBtn").addEventListener("click", () =>
   syncFilterCategorySelect(filterCategoryValue || name);
   renderCategorySettingTable();
   setCategorySettingInputs();
-  updateCodePreview();`r`n  applyLdapInputs();`r`n  syncSoftwareMetaControls();
+  updateCodePreview();
+  applyLdapInputs();
+  syncSoftwareMetaControls();
 });
 
 document.getElementById("clearCategorySettingBtn").addEventListener("click", () => {
@@ -3198,7 +3335,9 @@ document.getElementById("settingCategoryTableBody").addEventListener("click", (e
   syncFilterCategorySelect(filterCategoryValue);
   renderCategorySettingTable();
   setCategorySettingInputs();
-  updateCodePreview();`r`n  applyLdapInputs();`r`n  syncSoftwareMetaControls();
+  updateCodePreview();
+  applyLdapInputs();
+  syncSoftwareMetaControls();
   showToast("카테고리를 삭제했습니다.");
 });
 
@@ -3331,6 +3470,14 @@ async function initialize() {
 }
 
 initialize();
+
+
+
+
+
+
+
+
 
 
 
