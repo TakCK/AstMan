@@ -107,11 +107,13 @@ def _resolve_department_from_owner(db: Session, owner: str | None, fallback: str
     return fallback_text or None
 
 
-def _normalize_assignees(values: list[str] | None) -> list[str]:
+def _normalize_assignees(values: list[str] | None, *, allow_duplicates: bool = False) -> list[str]:
     result: list[str] = []
     for value in values or []:
         key = str(value or "").strip()
-        if not key or key in result:
+        if not key:
+            continue
+        if (not allow_duplicates) and key in result:
             continue
         result.append(key)
     return result
@@ -181,8 +183,12 @@ def _sync_software_assignees_and_details(
     default_purchase_model: str,
     default_start_date: date | None = None,
     default_end_date: date | None = None,
+    allow_duplicates: bool = False,
 ) -> tuple[list[str], list[dict[str, str | None]]]:
-    normalized_assignees = _normalize_assignees(assignees if assignees is not None else existing_assignees)
+    normalized_assignees = _normalize_assignees(
+        assignees if assignees is not None else existing_assignees,
+        allow_duplicates=allow_duplicates,
+    )
     normalized_details = _normalize_assignee_details(
         assignee_details if assignee_details is not None else existing_assignee_details,
         default_purchase_model,
@@ -191,13 +197,18 @@ def _sync_software_assignees_and_details(
     detail_map = {row["username"]: row for row in normalized_details}
 
     if assignees is None and assignee_details is not None:
-        normalized_assignees = [row["username"] for row in normalized_details]
+        normalized_assignees = _normalize_assignees(
+            [row["username"] for row in normalized_details],
+            allow_duplicates=allow_duplicates,
+        )
 
     default_start = _normalize_software_date(default_start_date) if default_start_date else None
     default_end = _normalize_software_date(default_end_date) if default_end_date else None
 
+    unique_assignees = _normalize_assignees(normalized_assignees, allow_duplicates=False)
+
     merged_details: list[dict[str, str | None]] = []
-    for username in normalized_assignees:
+    for username in unique_assignees:
         current = detail_map.get(username)
         if current:
             start_date = _normalize_software_date(current.get("start_date"))
@@ -225,12 +236,14 @@ def _sync_software_assignees_and_details(
 
     return normalized_assignees, merged_details
 
-
 def _normalize_software_license_json_fields(db_row: models.SoftwareLicense) -> models.SoftwareLicense:
+    allow_duplicates = bool(getattr(db_row, "allow_multiple_assignments", False))
+    db_row.allow_multiple_assignments = allow_duplicates
+
     if not isinstance(db_row.assignees, list):
         db_row.assignees = []
     else:
-        db_row.assignees = _normalize_assignees(db_row.assignees)
+        db_row.assignees = _normalize_assignees(db_row.assignees, allow_duplicates=allow_duplicates)
 
     if not isinstance(db_row.assignee_details, list):
         db_row.assignee_details = []
@@ -238,7 +251,6 @@ def _normalize_software_license_json_fields(db_row: models.SoftwareLicense) -> m
     db_row.license_scope = normalize_license_scope(getattr(db_row, "license_scope", None))
 
     return db_row
-
 
 def _get_software_assignee_end_dates(db_row: models.SoftwareLicense) -> list[date]:
     _normalize_software_license_json_fields(db_row)
@@ -1051,6 +1063,7 @@ def create_software_license(db: Session, payload: schemas.SoftwareLicenseCreate)
     data["subscription_type"] = _string_or_default(data.get("subscription_type"), default="연 구독")
     data["purchase_currency"] = _string_or_default(data.get("purchase_currency"), default="원")
     data["license_type"] = data["subscription_type"]
+    data["allow_multiple_assignments"] = bool(data.get("allow_multiple_assignments", False))
 
     assignees, assignee_details = _sync_software_assignees_and_details(
         assignees=data.get("assignees"),
@@ -1060,6 +1073,7 @@ def create_software_license(db: Session, payload: schemas.SoftwareLicenseCreate)
         default_purchase_model=data["subscription_type"],
         default_start_date=data.get("start_date"),
         default_end_date=data.get("end_date"),
+        allow_duplicates=bool(data.get("allow_multiple_assignments", False)),
     )
     data["assignees"] = assignees
     data["assignee_details"] = assignee_details
@@ -1153,9 +1167,13 @@ def update_software_license(
     if "purchase_currency" in updates:
         updates["purchase_currency"] = _string_or_default(updates.get("purchase_currency"), default="원")
 
+    if "allow_multiple_assignments" in updates:
+        updates["allow_multiple_assignments"] = bool(updates.get("allow_multiple_assignments"))
+
     next_subscription_type = updates.get("subscription_type") or db_row.subscription_type or "연 구독"
     next_start_date = updates.get("start_date", db_row.start_date)
     next_end_date = updates.get("end_date", db_row.end_date)
+    next_allow_multiple_assignments = bool(updates.get("allow_multiple_assignments") if "allow_multiple_assignments" in updates else db_row.allow_multiple_assignments)
 
     next_assignees, next_assignee_details = _sync_software_assignees_and_details(
         assignees=updates.get("assignees") if "assignees" in updates else None,
@@ -1165,9 +1183,10 @@ def update_software_license(
         default_purchase_model=next_subscription_type,
         default_start_date=next_start_date,
         default_end_date=next_end_date,
+        allow_duplicates=next_allow_multiple_assignments,
     )
 
-    if "assignees" in updates or "assignee_details" in updates or "subscription_type" in updates:
+    if "assignees" in updates or "assignee_details" in updates or "subscription_type" in updates or "allow_multiple_assignments" in updates:
         updates["assignees"] = next_assignees
         updates["assignee_details"] = next_assignee_details
 
@@ -1341,7 +1360,7 @@ def _build_hardware_history_points(
 
 
 def _build_software_projection_points(
-    software_rows: list[tuple[date | None, date | None, datetime, Decimal | float | int | None, str | None, str | None, str | None]],
+    software_rows: list[tuple[date | None, date | None, datetime, Decimal | float | int | None, str | None, str | None, str | None, int | None]],
     period: str,
     today: date,
     usd_krw_rate: float,
@@ -1355,8 +1374,13 @@ def _build_software_projection_points(
         scope_filter_key = "all"
 
     normalized_rows: list[dict[str, int | float | str]] = []
-    for start_date, end_date, created_at, purchase_cost, purchase_currency, subscription_type, license_scope in software_rows:
-        amount = _cost_to_krw(purchase_cost, purchase_currency, usd_krw_rate)
+    for start_date, end_date, created_at, purchase_cost, purchase_currency, subscription_type, license_scope, total_quantity in software_rows:
+        quantity = max(0, int(total_quantity or 0))
+        if quantity <= 0:
+            continue
+
+        unit_amount = _cost_to_krw(purchase_cost, purchase_currency, usd_krw_rate)
+        amount = round(unit_amount * quantity, 2)
         if amount <= 0:
             continue
 
@@ -1418,7 +1442,6 @@ def _build_software_projection_points(
 
     return points
 
-
 def _build_dashboard_cost_trends(db: Session, today: date, usd_krw_rate: float) -> dict[str, dict[str, list[dict[str, str | float | bool]] | dict[str, list[dict[str, str | float | bool]]]]]:
     hardware_rows = (
         db.query(models.Asset.purchase_date, models.Asset.created_at, models.Asset.purchase_cost)
@@ -1442,6 +1465,7 @@ def _build_dashboard_cost_trends(db: Session, today: date, usd_krw_rate: float) 
             models.SoftwareLicense.purchase_currency,
             models.SoftwareLicense.subscription_type,
             models.SoftwareLicense.license_scope,
+            models.SoftwareLicense.total_quantity,
         )
         .filter(models.SoftwareLicense.purchase_cost.is_not(None))
         .all()
@@ -1566,6 +1590,10 @@ def get_dashboard_summary(db: Session):
         "category_counts": category_counts,
         "cost_trends": cost_trends,
     }
+
+
+
+
 
 
 

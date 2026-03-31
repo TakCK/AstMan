@@ -100,6 +100,7 @@ class SoftwareLicense(Base):
     purchase_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     purchase_currency: Mapped[str] = mapped_column(String(10), nullable=False, default="원")
     total_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    allow_multiple_assignments: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     assignees: Mapped[list | None] = mapped_column(JSON, nullable=True)
     assignee_details: Mapped[list | None] = mapped_column(JSON, nullable=True)
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -123,6 +124,7 @@ class AssetHistory(Base):
     actor_username: Mapped[str] = mapped_column(String(100), nullable=False)
     changed_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 
 
 

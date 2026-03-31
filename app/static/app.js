@@ -532,6 +532,7 @@ const state = {
   disposedAssets: [],
   softwareLicenses: [],
   softwareLicensesAll: [],
+  softwareLicenseKeys: {},
   currentAssetId: null,
   directoryUsers: [],
   lastLdapSearchUsers: [],
@@ -564,6 +565,12 @@ const state = {
   dashboardCostScope: "all",
   settingsSubtab: "hardware",
   settingsAccountsSubtab: "users",
+  userDeactivation: {
+    targetUserId: 0,
+    targetUsername: "",
+    preview: null,
+    selectedAssetIds: new Set(),
+  },
   orgChartShowInactive: false,
   orgChartDeptExpanded: false,
   settingsMiscSubtab: "ldap",
@@ -696,6 +703,10 @@ const orgChartShowInactiveInput = document.getElementById("orgChartShowInactive"
 const orgChartToggleDeptExpandBtn = document.getElementById("orgChartToggleDeptExpandBtn");
 const ownerAssignModal = document.getElementById("ownerAssignModal");
 const ownerAssignInput = document.getElementById("ownerAssignInput");
+const userDeactivateModal = document.getElementById("userDeactivateModal");
+const userDeactivateSummary = document.getElementById("userDeactivateSummary");
+const userDeactivateAssetsBox = document.getElementById("userDeactivateAssetsBox");
+const userDeactivateLicensesBox = document.getElementById("userDeactivateLicensesBox");
 const addOwnerInput = document.getElementById("addOwner");
 const editOwnerInput = document.getElementById("editOwner");
 const ldapPasswordModal = document.getElementById("ldapPasswordModal");
@@ -1672,6 +1683,205 @@ function closeUserMailPreviewModal() {
   userMailPreviewModal.classList.add("hidden");
 }
 
+function getCurrentUserSearchQuery() {
+  const subtab = String(state.settingsAccountsSubtab || "users");
+  if (subtab === "users-inactive") {
+    return document.getElementById("inactiveUserSearchQ")?.value || "";
+  }
+  if (subtab === "orgchart") {
+    return document.getElementById("orgChartSearchQ")?.value || "";
+  }
+  return document.getElementById("userSearchQ")?.value || "";
+}
+
+function resetUserDeactivationState() {
+  state.userDeactivation = {
+    targetUserId: 0,
+    targetUsername: "",
+    preview: null,
+    selectedAssetIds: new Set(),
+  };
+}
+
+function updateUserDeactivateModalSummary() {
+  const preview = state.userDeactivation?.preview || null;
+  if (!preview || !userDeactivateSummary) return;
+
+  const totalAssets = Number(preview.assigned_asset_count || 0);
+  const totalLicenses = Number(preview.assigned_license_count || 0);
+  const selectedCount = state.userDeactivation.selectedAssetIds?.size || 0;
+
+  let text = `할당 자산 ${totalAssets}건 / 할당 라이선스 ${totalLicenses}건`;
+  if (totalAssets > 0) {
+    text += ` / 선택 자산 ${selectedCount}건 해제 후 비활성화`;
+  }
+  userDeactivateSummary.textContent = text;
+
+  const applyBtn = document.getElementById("userDeactivateApplyBtn");
+  if (!applyBtn) return;
+
+  if (totalAssets > 0) {
+    applyBtn.textContent = `선택 자산 ${selectedCount}건 해제 후 비활성화`;
+    applyBtn.disabled = selectedCount <= 0;
+  } else {
+    applyBtn.textContent = "비활성화";
+    applyBtn.disabled = false;
+  }
+}
+
+function renderUserDeactivateModal(preview) {
+  if (!userDeactivateAssetsBox || !userDeactivateLicensesBox) return;
+
+  const assets = Array.isArray(preview?.assigned_assets) ? preview.assigned_assets : [];
+  const licenses = Array.isArray(preview?.assigned_licenses) ? preview.assigned_licenses : [];
+
+  if (!assets.length) {
+    userDeactivateAssetsBox.innerHTML = '<div class="user-deactivate-empty">할당된 자산이 없습니다.</div>';
+  } else {
+    userDeactivateAssetsBox.innerHTML = assets
+      .map((asset) => {
+        const assetId = Number(asset?.id || 0);
+        const checked = state.userDeactivation.selectedAssetIds.has(assetId) ? "checked" : "";
+        const code = String(asset?.asset_code || "-").trim() || "-";
+        const name = String(asset?.name || "-").trim() || "-";
+        const category = String(asset?.category || "-").trim() || "-";
+        const status = String(asset?.status || "-").trim() || "-";
+        return `
+          <div class="user-deactivate-item">
+            <label>
+              <input type="checkbox" class="user-deactivate-asset-check" data-asset-id="${assetId}" ${checked} />
+              <span>
+                <div class="user-deactivate-item-main">[${escapeHtml(code)}] ${escapeHtml(name)}</div>
+                <div class="user-deactivate-item-sub">카테고리: ${escapeHtml(category)} / 상태: ${escapeHtml(status)}</div>
+              </span>
+            </label>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  if (!licenses.length) {
+    userDeactivateLicensesBox.innerHTML = '<div class="user-deactivate-empty">할당된 라이선스가 없습니다.</div>';
+  } else {
+    userDeactivateLicensesBox.innerHTML = licenses
+      .map((licenseRow) => {
+        const licenseName = String(licenseRow?.license_name || "-").trim() || "-";
+        const assignmentCount = Number(licenseRow?.assignment_count || 0);
+        return `
+          <div class="user-deactivate-item">
+            <div>
+              <div class="user-deactivate-item-main">${escapeHtml(licenseName)}</div>
+              <div class="user-deactivate-item-sub">할당 수량: ${assignmentCount}</div>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  updateUserDeactivateModalSummary();
+}
+
+async function requestDirectoryUserDeactivation(directoryUserId, username = "") {
+  const userId = Number(directoryUserId || 0);
+  if (!userId) throw new Error("사용자 정보가 올바르지 않습니다.");
+
+  const preview = await api(`/directory-users/${userId}/deactivation-preview`);
+  const totalAssets = Number(preview?.assigned_asset_count || 0);
+  const totalLicenses = Number(preview?.assigned_license_count || 0);
+
+  if (totalAssets <= 0 && totalLicenses <= 0) {
+    return await api(`/directory-users/${userId}/deactivate`, {
+      method: "POST",
+      body: JSON.stringify({ release_assets: false, asset_ids: [] }),
+    });
+  }
+
+  if (!userDeactivateModal) {
+    throw new Error("비활성화 확인 팝업을 표시할 수 없습니다.");
+  }
+
+  state.userDeactivation = {
+    targetUserId: userId,
+    targetUsername: String(username || preview?.username || "").trim(),
+    preview,
+    selectedAssetIds: new Set(
+      (Array.isArray(preview?.assigned_assets) ? preview.assigned_assets : [])
+        .map((row) => Number(row?.id || 0))
+        .filter((id) => id > 0),
+    ),
+  };
+
+  renderUserDeactivateModal(preview);
+  userDeactivateModal.classList.remove("hidden");
+
+  return await new Promise((resolve) => {
+    const applyBtn = document.getElementById("userDeactivateApplyBtn");
+    const cancelBtn = document.getElementById("userDeactivateCancelBtn");
+
+    const cleanup = () => {
+      applyBtn?.removeEventListener("click", onApply);
+      cancelBtn?.removeEventListener("click", onCancel);
+      userDeactivateModal.removeEventListener("click", onBackdrop);
+      userDeactivateModal.removeEventListener("change", onAssetToggle);
+      userDeactivateModal.classList.add("hidden");
+      resetUserDeactivationState();
+    };
+
+    const onAssetToggle = (event) => {
+      const target = event.target.closest(".user-deactivate-asset-check");
+      if (!target) return;
+      const assetId = Number(target.dataset.assetId || 0);
+      if (assetId <= 0) return;
+
+      if (target.checked) {
+        state.userDeactivation.selectedAssetIds.add(assetId);
+      } else {
+        state.userDeactivation.selectedAssetIds.delete(assetId);
+      }
+      updateUserDeactivateModalSummary();
+    };
+
+    const onCancel = () => {
+      cleanup();
+      resolve(null);
+    };
+
+    const onBackdrop = (event) => {
+      if (event.target !== userDeactivateModal) return;
+      onCancel();
+    };
+
+    const onApply = async () => {
+      try {
+        const activePreview = state.userDeactivation.preview || preview;
+        const hasAssets = Number(activePreview?.assigned_asset_count || 0) > 0;
+        const selectedAssetIds = [...(state.userDeactivation.selectedAssetIds || new Set())]
+          .map((id) => Number(id || 0))
+          .filter((id) => id > 0);
+
+        const result = await api(`/directory-users/${userId}/deactivate`, {
+          method: "POST",
+          body: JSON.stringify({
+            release_assets: hasAssets,
+            asset_ids: selectedAssetIds,
+          }),
+        });
+
+        cleanup();
+        resolve(result);
+      } catch (error) {
+        showToast(error.message || "사용자 비활성화 처리에 실패했습니다.");
+      }
+    };
+
+    applyBtn?.addEventListener("click", onApply);
+    cancelBtn?.addEventListener("click", onCancel);
+    userDeactivateModal.addEventListener("click", onBackdrop);
+    userDeactivateModal.addEventListener("change", onAssetToggle);
+  });
+}
 function renderUserMailPreviewModal(data) {
   if (!userMailPreviewSummary || !userMailPreviewTableBody) return;
 
@@ -2027,7 +2237,7 @@ function buildLineGeometry(values, options = {}) {
   const length = normalized.length;
   const width = Math.max(Number(options.width) || 700, Math.max(length, 1) * 82);
   const height = Number(options.height) || 220;
-  const padLeft = Number(options.padLeft) || 42;
+  const padLeft = Number(options.padLeft) || 60;
   const padRight = Number(options.padRight) || 20;
   const padTop = Number(options.padTop) || 14;
   const padBottom = Number(options.padBottom) || 40;
@@ -2056,6 +2266,30 @@ function buildLineGeometry(values, options = {}) {
   };
 }
 
+
+function buildLineYAxis(geometry, tickCount = 5) {
+  const count = Math.max(2, Number(tickCount) || 5);
+  const plotHeight = Math.max(1, geometry.height - geometry.padTop - geometry.padBottom);
+  const ticks = Array.from({ length: count }, (_, idx) => {
+    const ratio = count <= 1 ? 0 : idx / (count - 1);
+    const value = geometry.maxValue * (1 - ratio);
+    const y = geometry.padTop + plotHeight * ratio;
+    return { value, y, idx };
+  });
+
+  const gridLines = ticks
+    .map((tick) => {
+      if (tick.idx === ticks.length - 1) return "";
+      return `<line x1="${geometry.padLeft.toFixed(2)}" y1="${tick.y.toFixed(2)}" x2="${(geometry.width - geometry.padRight).toFixed(2)}" y2="${tick.y.toFixed(2)}" class="cost-line-grid-line"></line>`;
+    })
+    .join("");
+
+  const labels = ticks
+    .map((tick) => `<text x="${(geometry.padLeft - 8).toFixed(2)}" y="${(tick.y + 4).toFixed(2)}" text-anchor="end" class="cost-line-y-label">${escapeHtml(formatCostCompact(tick.value))}</text>`)
+    .join("");
+
+  return { gridLines, labels };
+}
 function buildPathD(points) {
   if (!Array.isArray(points) || points.length === 0) return "";
   return points
@@ -2151,6 +2385,7 @@ function renderHardwareCostLineChart(points) {
   const geometry = buildLineGeometry(values);
   const pathD = buildPathD(geometry.coords);
   const tickIndexes = buildChartTickIndexes(rows.length);
+  const yAxis = buildLineYAxis(geometry);
 
   const tickLabels = tickIndexes
     .map((index) => {
@@ -2178,7 +2413,10 @@ function renderHardwareCostLineChart(points) {
       </div>
       <div class="cost-line-wrap">
         <svg viewBox="0 0 ${geometry.width} ${geometry.height}" class="cost-line-svg" role="img" aria-label="하드웨어 누적 비용 추이">
-          <line x1="${geometry.padLeft}" y1="${geometry.baselineY.toFixed(2)}" x2="${(geometry.width - geometry.padRight).toFixed(2)}" y2="${geometry.baselineY.toFixed(2)}" class="cost-line-axis"></line>
+          ${yAxis.gridLines}
+          <line x1="${geometry.padLeft}" y1="${geometry.padTop.toFixed(2)}" x2="${geometry.padLeft}" y2="${geometry.baselineY.toFixed(2)}" class="cost-line-axis y"></line>
+          <line x1="${geometry.padLeft}" y1="${geometry.baselineY.toFixed(2)}" x2="${(geometry.width - geometry.padRight).toFixed(2)}" y2="${geometry.baselineY.toFixed(2)}" class="cost-line-axis x"></line>
+          ${yAxis.labels}
           <path d="${pathD}" class="cost-line-path hw"></path>
           ${dots}
           ${tickLabels}
@@ -2199,6 +2437,7 @@ function renderSoftwareCostLineChart(points, scope = "all") {
   const geometry = buildLineGeometry(values);
   const tickIndexes = buildChartTickIndexes(rows.length);
   const firstForecastIndex = rows.findIndex((row) => row.is_forecast);
+  const yAxis = buildLineYAxis(geometry);
 
   const actualPoints = firstForecastIndex >= 0
     ? geometry.coords.slice(0, Math.max(firstForecastIndex, 0) + 1)
@@ -2243,7 +2482,10 @@ function renderSoftwareCostLineChart(points, scope = "all") {
       </div>
       <div class="cost-line-wrap">
         <svg viewBox="0 0 ${geometry.width} ${geometry.height}" class="cost-line-svg" role="img" aria-label="소프트웨어 과거 및 예상 비용 추이">
-          <line x1="${geometry.padLeft}" y1="${geometry.baselineY.toFixed(2)}" x2="${(geometry.width - geometry.padRight).toFixed(2)}" y2="${geometry.baselineY.toFixed(2)}" class="cost-line-axis"></line>
+          ${yAxis.gridLines}
+          <line x1="${geometry.padLeft}" y1="${geometry.padTop.toFixed(2)}" x2="${geometry.padLeft}" y2="${geometry.baselineY.toFixed(2)}" class="cost-line-axis y"></line>
+          <line x1="${geometry.padLeft}" y1="${geometry.baselineY.toFixed(2)}" x2="${(geometry.width - geometry.padRight).toFixed(2)}" y2="${geometry.baselineY.toFixed(2)}" class="cost-line-axis x"></line>
+          ${yAxis.labels}
           <path d="${actualPath}" class="cost-line-path sw-actual"></path>
           <path d="${forecastPath}" class="cost-line-path sw-forecast"></path>
           ${dots}
@@ -2254,7 +2496,6 @@ function renderSoftwareCostLineChart(points, scope = "all") {
     </div>
   `;
 }
-
 function renderDashboardCostTrend(summary = state.dashboardSummary || {}) {
   if (!dashboardCostChart || !dashboardCostLegend || !dashboardCostPeriodTabs) return;
 
@@ -2395,11 +2636,13 @@ async function applySoftwareDrilldown(mode = "") {
   const filterExpiring = document.getElementById("softwareFilterExpiring");
   const filterCategory = document.getElementById("softwareFilterCategory");
   const filterSubscription = document.getElementById("softwareFilterSubscription");
+  const filterScope = document.getElementById("softwareFilterScope");
 
   if (filterField) filterField.value = "all";
   if (filterExpiring) filterExpiring.value = "";
   if (filterCategory) filterCategory.value = "";
   if (filterSubscription) filterSubscription.value = "";
+  if (filterScope) filterScope.value = "";
 
   activateTab("software");
   activateSoftwareSubtab("list");
@@ -2576,16 +2819,36 @@ function makeSoftwareAssignmentLookupLabel(row) {
   return String(row?.product_name || `라이선스#${id || ""}`).trim();
 }
 
+function isSoftwareMultiAssignEnabled(row) {
+  return Boolean(row?.allow_multiple_assignments);
+}
+
 function getSoftwareAssignees(row) {
+  const allowMulti = isSoftwareMultiAssignEnabled(row);
   const direct = Array.isArray(row?.assignees)
     ? row.assignees.map((v) => String(v || "").trim()).filter(Boolean)
     : [];
-  if (direct.length) return [...new Set(direct)];
+
+  if (direct.length) {
+    return allowMulti ? direct : [...new Set(direct)];
+  }
 
   const fromDetails = Array.isArray(row?.assignee_details)
     ? row.assignee_details.map((item) => String(item?.username || "").trim()).filter(Boolean)
     : [];
   return [...new Set(fromDetails)];
+}
+
+function getSoftwareUniqueAssignees(row) {
+  return [...new Set(getSoftwareAssignees(row))];
+}
+
+function getSoftwareAssigneeSeatCountMap(row) {
+  const map = new Map();
+  getSoftwareAssignees(row).forEach((username) => {
+    map.set(username, Number(map.get(username) || 0) + 1);
+  });
+  return map;
 }
 
 function getSoftwareAssigneeDetails(row) {
@@ -2615,7 +2878,7 @@ function getSoftwareAssigneeDetails(row) {
     if (!detailMap.has(item.username)) detailMap.set(item.username, item);
   });
 
-  return getSoftwareAssignees(row).map((username) => {
+  return getSoftwareUniqueAssignees(row).map((username) => {
     const current = detailMap.get(username);
     if (current) return current;
     return {
@@ -2636,8 +2899,9 @@ function getSoftwareAssigneeDetailMap(row) {
 
 function buildSoftwareAssigneePayload(license, assignees, detailMap) {
   const defaultPurchaseModel = String(license?.subscription_type || "연 구독").trim() || "연 구독";
+  const uniqueAssignees = [...new Set((assignees || []).map((username) => String(username || "").trim()).filter(Boolean))];
 
-  return assignees.map((username) => {
+  return uniqueAssignees.map((username) => {
     const current = detailMap.get(username) || {};
     const startDate = String(current.start_date || "").trim();
     const endDate = String(current.end_date || "").trim();
@@ -2654,6 +2918,7 @@ function buildSoftwareAssigneePayload(license, assignees, detailMap) {
     };
   });
 }
+
 function getSoftwareAssignedQuantity(row) {
   return getSoftwareAssignees(row).length;
 }
@@ -2858,6 +3123,7 @@ function readSoftwareFormPayload() {
     license_scope: document.getElementById("swLicenseScope")?.value || "일반",
     subscription_type: document.getElementById("swSubscriptionType")?.value || "연 구독",
     total_quantity: Math.floor(totalQuantity),
+    allow_multiple_assignments: document.getElementById("swAllowMultiAssign")?.value === "true",
     start_date: startDate,
     end_date: endDate,
     purchase_cost: purchaseCost,
@@ -2880,6 +3146,57 @@ function updateSoftwareQuantityFields(assignedCount = null) {
   if (unassignedInput) unassignedInput.value = String(unassigned);
 }
 
+function setSoftwareLicenseKeyField(value = "") {
+  const input = document.getElementById("swLicenseKey");
+  if (!input) return;
+  input.value = String(value || "");
+}
+
+async function loadSoftwareLicenseKeyForEdit(licenseId) {
+  if (!isAdminUser()) {
+    setSoftwareLicenseKeyField("");
+    return;
+  }
+
+  const id = Number(licenseId || 0);
+  if (!id) {
+    setSoftwareLicenseKeyField("");
+    return;
+  }
+
+  const cached = state.softwareLicenseKeys?.[id];
+  if (typeof cached === "string") {
+    setSoftwareLicenseKeyField(cached);
+    return;
+  }
+
+  const result = await api(`/software-licenses/${id}/license-key`);
+  const value = String(result?.license_key || "");
+  if (!state.softwareLicenseKeys) state.softwareLicenseKeys = {};
+  state.softwareLicenseKeys[id] = value;
+  setSoftwareLicenseKeyField(value);
+}
+
+async function saveSoftwareLicenseKeyForEdit(licenseId) {
+  if (!isAdminUser()) return;
+
+  const id = Number(licenseId || 0);
+  if (!id) return;
+
+  const input = document.getElementById("swLicenseKey");
+  if (!input) return;
+
+  const licenseKey = String(input.value || "");
+  const result = await api(`/software-licenses/${id}/license-key`, {
+    method: "PUT",
+    body: JSON.stringify({ license_key: licenseKey }),
+  });
+
+  if (!state.softwareLicenseKeys) state.softwareLicenseKeys = {};
+  state.softwareLicenseKeys[id] = String(result?.license_key || "");
+  setSoftwareLicenseKeyField(state.softwareLicenseKeys[id]);
+}
+
 function resetSoftwareForm() {
   const form = document.getElementById("softwareForm");
   if (!form) return;
@@ -2893,6 +3210,8 @@ function resetSoftwareForm() {
   document.getElementById("swTotalQuantity").value = "1";
   document.getElementById("swPurchaseCurrency").value = "원";
   document.getElementById("swLicenseScope").value = "일반";
+  document.getElementById("swAllowMultiAssign").value = "false";
+  setSoftwareLicenseKeyField("");
   updateSoftwareQuantityFields(0);
 
   const saveBtn = document.getElementById("saveSoftwareBtn");
@@ -2909,6 +3228,7 @@ function fillSoftwareForm(row) {
   syncSoftwareMetaControls();
   document.getElementById("swCategory").value = row.license_category || "기타";
   document.getElementById("swLicenseScope").value = normalizeSoftwareLicenseScope(row.license_scope);
+  document.getElementById("swAllowMultiAssign").value = row.allow_multiple_assignments ? "true" : "false";
   document.getElementById("swSubscriptionType").value = row.subscription_type || "연 구독";
 
   document.getElementById("swTotalQuantity").value = String(row.total_quantity || 1);
@@ -2923,6 +3243,9 @@ function fillSoftwareForm(row) {
     ? toLookupDisplay(drafter, drafterUser.display_name || "")
     : drafter;
   document.getElementById("swNotes").value = row.notes || "";
+
+  const cachedLicenseKey = state.softwareLicenseKeys?.[row.id];
+  setSoftwareLicenseKeyField(typeof cachedLicenseKey === "string" ? cachedLicenseKey : "");
 
   updateSoftwareQuantityFields(getSoftwareAssignedQuantity(row));
 
@@ -2969,7 +3292,7 @@ function renderSoftwareRows() {
           <td>${escapeHtml(normalizeSoftwareLicenseScope(row.license_scope))}</td>
           <td>${escapeHtml(row.start_date || "-")}</td>
           <td>${endDateText}</td>
-          <td>${escapeHtml(costText)}<br><span class="muted">입력값: ${escapeHtml(sourceCostText)}</span></td>
+          <td>${escapeHtml(costText)}<br><span class="muted">1인 단가 입력값: ${escapeHtml(sourceCostText)}</span></td>
           <td>${escapeHtml(currencyText)}</td>
           <td>${totalQty}</td>
           <td>${assignedQty}</td>
@@ -3021,7 +3344,8 @@ function getSoftwareAssignedSearchValues(row, field = "all") {
     license_name: [row?.license_name],
     category: [row?.category],
     purchase_model: [row?.purchase_model],
-    all: [row?.username, row?.display_name, row?.department, row?.license_name, row?.category, row?.purchase_model],
+    assignment_count: [row?.assignment_count],
+    all: [row?.username, row?.display_name, row?.department, row?.license_name, row?.assignment_count, row?.category, row?.purchase_model],
   };
 
   return (map[field] || map.all)
@@ -3050,6 +3374,13 @@ function compareSoftwareAssignedRows(a, b, sortKey = "expiry_key") {
     const da = String(a[sortKey] || "9999-12-31");
     const db = String(b[sortKey] || "9999-12-31");
     if (da !== db) return da.localeCompare(db);
+    return textCompare(a.display_name, b.display_name);
+  }
+
+  if (sortKey === "assignment_count") {
+    const na = Number(a.assignment_count || 0);
+    const nb = Number(b.assignment_count || 0);
+    if (na !== nb) return na - nb;
     return textCompare(a.display_name, b.display_name);
   }
 
@@ -3119,6 +3450,8 @@ function getSoftwareAssignedOverviewRows() {
 
   licenses.forEach((license) => {
     const details = getSoftwareAssigneeDetails(license);
+    const assigneeSeatCountMap = getSoftwareAssigneeSeatCountMap(license);
+
     details.forEach((detail) => {
       const username = String(detail?.username || "").trim();
       if (!username) return;
@@ -3131,6 +3464,7 @@ function getSoftwareAssignedOverviewRows() {
       const purchaseModel = String(detail?.purchase_model || license?.subscription_type || "-").trim() || "-";
       const startDate = String(detail?.start_date || license?.start_date || "").trim() || null;
       const endDate = String(detail?.end_date || license?.end_date || "").trim() || null;
+      const assignmentCount = Number(assigneeSeatCountMap.get(username) || 1);
       const dayDiff = getDayDiffFromToday(endDate);
 
       let expiryKey = "unknown";
@@ -3152,6 +3486,7 @@ function getSoftwareAssignedOverviewRows() {
       rows.push({
         license_id: Number(license?.id || 0),
         license_name: licenseName,
+        assignment_count: assignmentCount,
         category,
         username,
         display_name: displayName,
@@ -3219,18 +3554,24 @@ function renderSoftwareAssignedRows() {
   updateSoftwareAssignedSortButtons();
 
   if (!rows.length) {
-    softwareAssignedTableBody.innerHTML = '<tr><td colspan="9">조건에 맞는 할당 데이터가 없습니다.</td></tr>';
+    softwareAssignedTableBody.innerHTML = '<tr><td colspan="10">조건에 맞는 할당 데이터가 없습니다.</td></tr>';
     return;
   }
 
   softwareAssignedTableBody.innerHTML = rows
     .map((row) => {
+      const count = Number(row.assignment_count || 1);
+      const countText = count >= 2
+        ? `<strong>${escapeHtml(count)}</strong> <span class="muted">(중복)</span>`
+        : escapeHtml(count);
+
       return `
         <tr data-license-id="${row.license_id}">
           <td>${escapeHtml(row.username)}</td>
           <td>${escapeHtml(row.display_name)}</td>
           <td>${escapeHtml(row.department)}</td>
           <td>${escapeHtml(row.license_name)}</td>
+          <td>${countText}</td>
           <td>${escapeHtml(row.category)}</td>
           <td>${escapeHtml(row.purchase_model)}</td>
           <td>${escapeHtml(row.start_date || "-")}</td>
@@ -3241,10 +3582,15 @@ function renderSoftwareAssignedRows() {
     })
     .join("");
 }
+
 function buildSoftwareQueryParams() {
   const params = new URLSearchParams();
 
   const expiring = document.getElementById("softwareFilterExpiring")?.value || "";
+  const scope = String(document.getElementById("softwareFilterScope")?.value || "").trim();
+  if (scope) {
+    params.set("license_scope", normalizeSoftwareLicenseScope(scope));
+  }
   if (expiring === "30") {
     params.set("expiring_days", "30");
   } else if (expiring === "expired") {
@@ -3276,7 +3622,8 @@ function renderSoftwareAssignmentPanel() {
   }
 
   const assignees = getSoftwareAssignees(license);
-  const assignedSet = new Set(assignees);
+  const assignedSet = new Set(getSoftwareUniqueAssignees(license));
+  const assigneeSeatCountMap = getSoftwareAssigneeSeatCountMap(license);
   const assigneeDetailMap = getSoftwareAssigneeDetailMap(license);
   const totalQuantity = Math.max(1, Number(license.total_quantity || 1));
   const unassignedQuantity = Math.max(totalQuantity - assignees.length, 0);
@@ -3320,9 +3667,10 @@ function renderSoftwareAssignmentPanel() {
   softwareAssignUserTableBody.innerHTML = users
     .map((user) => {
       const username = String(user.username || "").trim();
-      const isAssigned = assignedSet.has(username);
+      const assignedCount = Number(assigneeSeatCountMap.get(username) || 0);
+      const isAssigned = assignedCount > 0;
       const atCapacity = assignees.length >= totalQuantity;
-      const canAssign = !isAssigned && !atCapacity;
+      const canAssign = !atCapacity;
       const defaultPurchaseModel = String(license.subscription_type || "연 구독").trim() || "연 구독";
       const defaultStartDate = String(license.start_date || "").trim() || null;
       const defaultEndDate = String(license.end_date || "").trim() || null;
@@ -3332,6 +3680,19 @@ function renderSoftwareAssignmentPanel() {
         end_date: defaultEndDate,
         purchase_model: defaultPurchaseModel,
       };
+
+      const assignButton = `
+            <button
+              type="button"
+              class="mini-btn software-assignment-action-btn"
+              data-license-id="${license.id}"
+              data-username="${escapeHtml(username)}"
+              data-action="assign"
+              ${canAssign ? "" : "disabled"}
+            >
+              ${canAssign ? "+1 할당" : "수량초과"}
+            </button>
+          `;
 
       const actionCell = isAssigned
         ? `
@@ -3344,6 +3705,7 @@ function renderSoftwareAssignmentPanel() {
               >
                 저장
               </button>
+              ${assignButton}
               <button
                 type="button"
                 class="mini-btn danger software-assignment-action-btn"
@@ -3351,21 +3713,14 @@ function renderSoftwareAssignmentPanel() {
                 data-username="${escapeHtml(username)}"
                 data-action="remove"
               >
-                할당 해제
+                1개 해제
               </button>
             </div>
           `
         : `
-            <button
-              type="button"
-              class="mini-btn software-assignment-action-btn"
-              data-license-id="${license.id}"
-              data-username="${escapeHtml(username)}"
-              data-action="assign"
-              ${canAssign ? "" : "disabled"}
-            >
-              ${canAssign ? "할당" : "수량초과"}
-            </button>
+            <div class="software-assignment-actions">
+              ${assignButton}
+            </div>
           `;
 
       return `
@@ -3388,7 +3743,7 @@ function renderSoftwareAssignmentPanel() {
     ? `<select class="software-assignee-purchase">${makeOptions(purchaseOptions, detail.purchase_model || defaultPurchaseModel)}</select>`
     : '<span class="muted">-</span>'}
           </td>
-          <td><span class="software-assign-status ${isAssigned ? "" : "off"}">${isAssigned ? "할당됨" : "미할당"}</span></td>
+          <td><span class="software-assign-status ${isAssigned ? "" : "off"}">${isAssigned ? `할당됨${assignedCount > 1 ? ` (${assignedCount})` : ""}` : "미할당"}</span></td>
           <td>${actionCell}</td>
         </tr>
       `;
@@ -3410,7 +3765,6 @@ async function toggleSoftwareAssignment(licenseId, username, action) {
   let next = [...assignees];
 
   if (action === "assign") {
-    if (next.includes(userKey)) return;
     if (next.length >= totalQuantity) {
       throw new Error("총 수량을 초과하여 할당할 수 없습니다.");
     }
@@ -3424,19 +3778,25 @@ async function toggleSoftwareAssignment(licenseId, username, action) {
       });
     }
   } else {
-    next = next.filter((value) => value !== userKey);
-    detailMap.delete(userKey);
+    const removeIndex = next.findIndex((value) => value === userKey);
+    if (removeIndex >= 0) next.splice(removeIndex, 1);
+
+    if (!next.includes(userKey)) {
+      detailMap.delete(userKey);
+    }
   }
+
 
   const nextDetails = buildSoftwareAssigneePayload(license, next, detailMap);
 
   await api(`/software-licenses/${license.id}`, {
     method: "PUT",
-    body: JSON.stringify({ assignees: next, assignee_details: nextDetails }),
+    body: JSON.stringify({ allow_multiple_assignments: true, assignees: next, assignee_details: nextDetails }),
   });
 
   await Promise.all([loadSoftwareLicenses(), loadDashboard()]);
 }
+
 async function saveSoftwareAssigneeDetail(licenseId, username, rowElement) {
   const license = findSoftwareLicenseById(licenseId);
   if (!license) throw new Error("라이선스를 찾을 수 없습니다.");
@@ -3510,6 +3870,12 @@ async function loadSoftwareLicenses() {
   const subscriptionFilter = String(document.getElementById("softwareFilterSubscription")?.value || "").trim();
   if (subscriptionFilter) {
     filtered = filtered.filter((row) => String(row.subscription_type || "").trim() === subscriptionFilter);
+  }
+
+  const scopeFilter = String(document.getElementById("softwareFilterScope")?.value || "").trim();
+  if (scopeFilter) {
+    const normalizedScopeFilter = normalizeSoftwareLicenseScope(scopeFilter);
+    filtered = filtered.filter((row) => normalizeSoftwareLicenseScope(row.license_scope) === normalizedScopeFilter);
   }
 
   state.softwareLicenses = filtered;
@@ -3693,6 +4059,71 @@ function downloadCsvFile(filename, csvText) {
   URL.revokeObjectURL(url);
 }
 
+function parseAttachmentFilename(contentDisposition) {
+  const raw = String(contentDisposition || "");
+  if (!raw) return "";
+
+  const utf8Match = raw.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim());
+    } catch {
+      return utf8Match[1].trim();
+    }
+  }
+
+  const quotedMatch = raw.match(/filename="([^"]+)"/i);
+  if (quotedMatch?.[1]) return quotedMatch[1].trim();
+
+  const plainMatch = raw.match(/filename=([^;]+)/i);
+  if (plainMatch?.[1]) return plainMatch[1].trim();
+
+  return "";
+}
+
+function buildGeneralLicenseReportFallbackFilename() {
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  return `general_license_report_${yyyy}${mm}${dd}.xlsx`;
+}
+
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadGeneralLicenseReport() {
+  const response = await fetch("/dashboard/reports/general-licenses.xlsx", {
+    method: "GET",
+    headers: {
+      ...authHeaders(),
+    },
+  });
+
+  if (!response.ok) {
+    let detail = "보고서 다운로드에 실패했습니다.";
+    try {
+      const data = await response.json();
+      if (data?.detail) detail = String(data.detail);
+    } catch {
+      // ignore parse
+    }
+    throw new Error(detail);
+  }
+
+  const blob = await response.blob();
+  const headerFilename = parseAttachmentFilename(response.headers.get("Content-Disposition"));
+  const filename = headerFilename || buildGeneralLicenseReportFallbackFilename();
+  triggerBlobDownload(blob, filename);
+}
 function buildHardwareImportTemplateCsv() {
   const headers = [
     "자산명", "카테고리", "사용분류", "상태", "담당자", "사용자", "부서", "위치",
@@ -4584,6 +5015,14 @@ document.getElementById("exportAssetsCsvBtn")?.addEventListener("click", async (
   await exportAssetsCsv();
 });
 
+document.getElementById("downloadGeneralLicenseReportBtn")?.addEventListener("click", async () => {
+  try {
+    await downloadGeneralLicenseReport();
+    showToast("일반 라이선스/구독 보고서를 다운로드했습니다.");
+  } catch (error) {
+    showToast(error.message || "보고서 다운로드에 실패했습니다.");
+  }
+});
 document.getElementById("downloadHardwareCsvTemplateBtn")?.addEventListener("click", () => {
   downloadHardwareImportTemplate();
   showToast("하드웨어 업로드 양식을 다운로드했습니다.");
@@ -4705,29 +5144,51 @@ document.getElementById("softwareForm")?.addEventListener("submit", async (event
   try {
     const payload = readSoftwareFormPayload();
     const id = Number(document.getElementById("swId")?.value || 0);
+    let targetLicenseId = id;
 
     if (id > 0) {
       await api(`/software-licenses/${id}`, {
         method: "PUT",
         body: JSON.stringify(payload),
       });
+      targetLicenseId = id;
       showToast("소프트웨어 라이선스를 수정했습니다.");
     } else {
-      await api("/software-licenses", {
+      const created = await api("/software-licenses", {
         method: "POST",
         body: JSON.stringify(payload),
       });
+      targetLicenseId = Number(created?.id || 0);
       showToast("소프트웨어 라이선스를 등록했습니다.");
     }
 
-    resetSoftwareForm();
+    if (isAdminUser() && targetLicenseId > 0) {
+      await saveSoftwareLicenseKeyForEdit(targetLicenseId);
+    }
+
     await Promise.all([loadSoftwareLicenses(), loadDashboard()]);
+
+    if (targetLicenseId > 0) {
+      const swEditTarget = document.getElementById("swEditTarget");
+      if (swEditTarget) swEditTarget.value = String(targetLicenseId);
+
+      const refreshed = findSoftwareLicenseById(targetLicenseId);
+      if (refreshed) {
+        fillSoftwareForm(refreshed);
+      }
+
+      if (isAdminUser()) {
+        await loadSoftwareLicenseKeyForEdit(targetLicenseId);
+      }
+    } else {
+      resetSoftwareForm();
+    }
   } catch (error) {
     showToast(error.message);
   }
 });
 
-document.getElementById("swEditTarget")?.addEventListener("change", (event) => {
+document.getElementById("swEditTarget")?.addEventListener("change", async (event) => {
   const id = Number(event.target.value || 0);
   if (!id) {
     resetSoftwareForm();
@@ -4742,10 +5203,31 @@ document.getElementById("swEditTarget")?.addEventListener("change", (event) => {
   }
 
   fillSoftwareForm(row);
+  try {
+    await loadSoftwareLicenseKeyForEdit(id);
+  } catch (error) {
+    showToast(error.message);
+  }
 });
 
 document.getElementById("swTotalQuantity")?.addEventListener("input", () => {
   updateSoftwareQuantityFields();
+});
+
+document.getElementById("copySwLicenseKeyBtn")?.addEventListener("click", async () => {
+  const input = document.getElementById("swLicenseKey");
+  const value = String(input?.value || "");
+  if (!value) {
+    showToast("복사할 라이선스 키가 없습니다.");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(value);
+    showToast("라이선스 키를 복사했습니다.");
+  } catch {
+    showToast("클립보드 복사에 실패했습니다.");
+  }
 });
 
 document.getElementById("softwareCategoryForm")?.addEventListener("submit", (event) => {
@@ -4851,6 +5333,11 @@ softwareTableBody?.addEventListener("click", async (event) => {
     fillSoftwareForm(row);
     activateTab("software");
     activateSoftwareSubtab("editor");
+    try {
+      await loadSoftwareLicenseKeyForEdit(id);
+    } catch (error) {
+      showToast(error.message);
+    }
     return;
   }
 
@@ -5270,35 +5757,38 @@ document.getElementById("adminCreateForm")?.addEventListener("submit", async (ev
     const isActive = toggleBtn.dataset.active === "1";
 
     try {
+      let doneMessage = `${role === "admin" ? "관리자" : "사용자"} 상태를 변경했습니다.`;
+
       if (role === "admin") {
         await api(`/users/${userId}`, {
           method: "PUT",
           body: JSON.stringify({ is_active: !isActive }),
         });
+      } else if (isActive) {
+        const managed = (state.managedUsers || []).find((row) => Number(row?.id || 0) === userId);
+        const result = await requestDirectoryUserDeactivation(userId, managed?.username || "");
+        if (!result) {
+          return;
+        }
+        doneMessage = String(result.message || "사용자를 비활성화했습니다.");
       } else {
         await api(`/directory-users/${userId}`, {
           method: "PUT",
-          body: JSON.stringify({ is_active: !isActive }),
+          body: JSON.stringify({ is_active: true }),
         });
       }
 
       if (role === "admin") {
         await loadManagedUsers("admin", document.getElementById("adminSearchQ")?.value || "");
       } else {
-        const subtab = String(state.settingsAccountsSubtab || "users");
-        let query = document.getElementById("userSearchQ")?.value || "";
-        if (subtab === "users-inactive") {
-          query = document.getElementById("inactiveUserSearchQ")?.value || "";
-        } else if (subtab === "orgchart") {
-          query = document.getElementById("orgChartSearchQ")?.value || "";
-        }
+        const query = getCurrentUserSearchQuery();
         await loadManagedUsers("user", query);
       }
       if (role === "user") {
         await loadDirectoryUsers();
       }
 
-      showToast(`${role === "admin" ? "관리자" : "사용자"} 상태를 변경했습니다.`);
+      showToast(doneMessage);
     } catch (error) {
       showToast(error.message);
     }
@@ -5841,6 +6331,20 @@ async function initialize() {
 }
 
 initialize();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

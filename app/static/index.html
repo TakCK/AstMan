@@ -45,7 +45,10 @@
         <button class="subtab-btn" type="button" data-hardware-tab="disposed">폐기완료</button>
       </nav>
 
-      <section id="tab-dashboard" class="tab-section active">
+            <section id="tab-dashboard" class="tab-section active">
+        <div class="dashboard-actions">
+          <button id="downloadGeneralLicenseReportBtn" type="button" class="ghost-btn">일반 라이선스/구독 보고서 다운로드</button>
+        </div>
         <div id="summaryCards" class="summary-cards"></div>
         <div class="split-grid dashboard-split-grid">
           <article class="card">
@@ -131,6 +134,14 @@
               </label>
 
               <label class="software-field-row full-width">
+                <span class="software-field-label">중복 할당</span>
+                <select id="swAllowMultiAssign">
+                  <option value="false" selected>허용 안함 (1인 1개)</option>
+                  <option value="true">허용 (1인 다중 할당)</option>
+                </select>
+              </label>
+
+              <label class="software-field-row full-width">
                 <span class="software-field-label">구독 형태</span>
                 <select id="swSubscriptionType" required>
                   <option value="영구 구매">영구 구매</option>
@@ -151,8 +162,8 @@
               </label>
 
               <label class="software-field-row full-width">
-                <span class="software-field-label">구매 비용</span>
-                <input id="swPurchaseCost" type="number" min="0" step="0.01" placeholder="숫자만 입력" />
+                <span class="software-field-label">구매 비용(1인 단가)</span>
+                <input id="swPurchaseCost" type="number" min="0" step="0.01" placeholder="1인 기준 단가 입력" />
               </label>
 
               <label class="software-field-row full-width">
@@ -188,6 +199,14 @@
                 <textarea id="swNotes" placeholder="비고 입력"></textarea>
               </label>
 
+              <label class="software-field-row full-width" data-admin-only="1">
+                <span class="software-field-label">라이선스 키</span>
+                <div class="software-key-inline">
+                  <input id="swLicenseKey" type="text" placeholder="관리자만 조회/수정" autocomplete="off" />
+                  <button id="copySwLicenseKeyBtn" type="button" class="ghost-btn">복사</button>
+                </div>
+              </label>
+
               <div class="inline-actions full-width">
                 <button id="saveSoftwareBtn" type="submit" class="primary-btn">라이선스 저장</button>
                 <button id="cancelSoftwareEditBtn" type="button" class="ghost-btn">입력 초기화</button>
@@ -196,8 +215,11 @@
             <ul class="guide-list">
               <li><strong>구분</strong>: 소프트웨어 분류(설정 > 소프트웨어 설정에서 추가/수정)</li>
               <li><strong>라이선스 성격</strong>: 필수/일반 중 선택(대시보드 비용 토글 집계 기준)</li>
+              <li><strong>중복 할당</strong>: 허용 시 동일 사용자에게 같은 라이선스를 여러 수량으로 할당 가능</li>
               <li><strong>할당 수량</strong>: 사용자 할당 탭에서 자동 계산</li>
+              <li><strong>구매 비용</strong>: 1인 단가 기준 입력값(비용 집계 시 1인 단가 * 총 보유 수량으로 계산)</li>
               <li><strong>기안자</strong>: 사용자 목록(ID/이름)에서 검색 선택</li>
+              <li data-admin-only="1"><strong>라이선스 키</strong>: 관리자만 저장/복사 가능</li>
             </ul>
           </article>
         </section>
@@ -248,6 +270,11 @@
                 <option value="월 구독">월 구독</option>
                 <option value="사용량만큼 지불">사용량만큼 지불</option>
               </select>
+              <select id="softwareFilterScope">
+                <option value="">전체 성격</option>
+                <option value="필수">필수</option>
+                <option value="일반">일반</option>
+              </select>
               <button type="submit" class="primary-btn">검색</button>
             </form>
           </article>
@@ -265,7 +292,7 @@
                     <th>성격</th>
                     <th>시작일</th>
                     <th>만료일</th>
-                    <th>구매 비용</th>
+                    <th>구매 비용(1인 단가)</th>
                     <th>통화</th>
                     <th>총 수량</th>
                     <th>할당 수량</th>
@@ -320,6 +347,7 @@
                     <th><button type="button" class="table-sort-btn" data-sort-key="display_name">이름</button></th>
                     <th><button type="button" class="table-sort-btn" data-sort-key="department">부서</button></th>
                     <th><button type="button" class="table-sort-btn" data-sort-key="license_name">라이선스명</button></th>
+                    <th><button type="button" class="table-sort-btn" data-sort-key="assignment_count">할당 수량</button></th>
                     <th><button type="button" class="table-sort-btn" data-sort-key="category">구분</button></th>
                     <th><button type="button" class="table-sort-btn" data-sort-key="purchase_model">구매 방식</button></th>
                     <th><button type="button" class="table-sort-btn" data-sort-key="start_date">시작일</button></th>
@@ -1351,6 +1379,29 @@
     </div>
   </div>
 
+  <div id="userDeactivateModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-body user-deactivate-modal-body">
+      <h3>사용자 비활성화 확인</h3>
+      <p id="userDeactivateSummary" class="muted">할당 정보를 확인하는 중입니다.</p>
+
+      <div class="user-deactivate-section">
+        <h4>할당 자산</h4>
+        <p class="muted">비활성화 전에 자산 할당 해제가 필요합니다. 체크된 자산을 해제 후 비활성화합니다.</p>
+        <div id="userDeactivateAssetsBox" class="user-deactivate-list"></div>
+      </div>
+
+      <div class="user-deactivate-section">
+        <h4>할당 라이선스</h4>
+        <p class="muted">라이선스는 자동 해제되지 않으며, 현재 할당 현황만 표시합니다.</p>
+        <div id="userDeactivateLicensesBox" class="user-deactivate-list"></div>
+      </div>
+
+      <div class="modal-head-actions inline-right">
+        <button id="userDeactivateApplyBtn" type="button" class="primary-btn">자산 해제 후 비활성화</button>
+        <button id="userDeactivateCancelBtn" type="button" class="ghost-btn">취소</button>
+      </div>
+    </div>
+  </div>
   <div id="ldapPasswordModal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-body small-modal-body">
       <h3>LDAP Bind 비밀번호 입력</h3>
@@ -1370,6 +1421,11 @@
   <script src="/static/app.js"></script>
 </body>
 </html>
+
+
+
+
+
 
 
 

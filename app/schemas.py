@@ -134,6 +134,44 @@ class DirectoryUserBulkImportResponse(BaseModel):
     result: dict[str, int]
 
 
+class DirectoryUserAssignedAsset(BaseModel):
+    id: int
+    asset_code: str | None = None
+    name: str
+    category: str
+    status: str
+
+
+class DirectoryUserAssignedLicense(BaseModel):
+    license_id: int
+    license_name: str
+    assignment_count: int = 1
+
+
+class DirectoryUserDeactivationPreviewResponse(BaseModel):
+    directory_user_id: int
+    username: str
+    display_name: str | None = None
+    is_active: bool
+    assigned_asset_count: int
+    assigned_license_count: int
+    assigned_assets: list[DirectoryUserAssignedAsset] = Field(default_factory=list)
+    assigned_licenses: list[DirectoryUserAssignedLicense] = Field(default_factory=list)
+
+
+class DirectoryUserDeactivateRequest(BaseModel):
+    release_assets: bool = False
+    asset_ids: list[int] = Field(default_factory=list)
+
+
+class DirectoryUserDeactivateResponse(BaseModel):
+    ok: bool
+    message: str
+    released_asset_count: int
+    remaining_asset_count: int
+    assigned_license_count: int
+    user: DirectoryUserResponse
+
 class LdapSyncScheduleRequest(BaseModel):
     enabled: bool = False
     interval_minutes: int = Field(default=60, ge=5, le=1440)
@@ -289,6 +327,7 @@ class SoftwareLicenseBase(BaseModel):
     license_scope: str = Field(default="일반", min_length=1, max_length=20)
     subscription_type: str = Field(default="연 구독", min_length=1, max_length=30)
     total_quantity: int = Field(default=1, ge=1, le=100000)
+    allow_multiple_assignments: bool = False
     assignees: list[str] | None = Field(default_factory=list)
     assignee_details: list[SoftwareLicenseAssigneeDetail] | None = Field(default_factory=list)
     start_date: date | None = None
@@ -310,6 +349,7 @@ class SoftwareLicenseUpdate(BaseModel):
     license_scope: str | None = Field(default=None, min_length=1, max_length=20)
     subscription_type: str | None = Field(default=None, min_length=1, max_length=30)
     total_quantity: int | None = Field(default=None, ge=1, le=100000)
+    allow_multiple_assignments: bool | None = None
     assignees: list[str] | None = None
     assignee_details: list[SoftwareLicenseAssigneeDetail] | None = None
     start_date: date | None = None
@@ -326,6 +366,16 @@ class SoftwareLicenseResponse(SoftwareLicenseBase):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class SoftwareLicenseKeyUpdate(BaseModel):
+    license_key: str | None = Field(default=None, max_length=4000)
+
+
+class SoftwareLicenseKeyResponse(BaseModel):
+    license_id: int
+    license_key: str = ""
+    has_license_key: bool = False
 
 
 
@@ -605,6 +655,9 @@ class AssetHistoryResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+
 
 
 
