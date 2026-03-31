@@ -1,8 +1,9 @@
-﻿from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.orm import Session
 
 from .. import legacy_main as legacy, models, schemas, security
 from ..database import get_db
+from ..services import label_service
 
 router = APIRouter()
 
@@ -65,6 +66,24 @@ def list_assets(
         db,
         _,
     )
+
+
+@router.post("/assets/labels/preview", response_model=schemas.AssetLabelPreviewResponse, summary="자산 스티커 라벨 데이터(다중)", tags=["자산"])
+def get_assets_label_preview(
+    payload: schemas.AssetLabelPreviewRequest,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(security.get_current_user),
+):
+    return label_service.get_assets_label_preview(db, payload.asset_ids)
+
+
+@router.get("/assets/{asset_id}/label", response_model=schemas.AssetLabelPreviewResponse, summary="자산 스티커 라벨 데이터(단일)", tags=["자산"])
+def get_asset_label_preview(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(security.get_current_user),
+):
+    return label_service.get_asset_label_preview(db, asset_id)
 
 
 @router.get("/assets/{asset_id}", response_model=schemas.AssetResponse, summary="자산 상세 조회", tags=["자산"])

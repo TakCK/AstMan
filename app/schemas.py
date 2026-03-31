@@ -442,6 +442,66 @@ class DashboardSummaryResponse(BaseModel):
     cost_trends: DashboardCostTrendSet
 
 
+class DashboardSoftwareCostOverallSummary(BaseModel):
+    team_count: int = 0
+    user_count: int = 0
+    assigned_license_count: int = 0
+    monthly_cost: float = 0
+    yearly_cost: float = 0
+    license_type_count: int = 0
+
+
+class DashboardSoftwareCostTeamSummaryItem(BaseModel):
+    team_name: str
+    user_count: int = 0
+    assigned_license_count: int = 0
+    monthly_cost: float = 0
+    yearly_cost: float = 0
+    license_type_count: int = 0
+
+
+class DashboardSoftwareCostSummaryResponse(BaseModel):
+    scope_filter: Literal["all", "general", "required"] = "all"
+    overall_summary: DashboardSoftwareCostOverallSummary
+    team_summary: list[DashboardSoftwareCostTeamSummaryItem] = Field(default_factory=list)
+
+
+class SoftwareCostSnapshotCreateRequest(BaseModel):
+    snapshot_month: date | None = None
+    scope_filter: Literal["all", "general", "required"] = "all"
+    overwrite: bool = False
+
+
+class SoftwareCostSnapshotItem(BaseModel):
+    id: int
+    snapshot_month: date
+    team_name: str
+    scope: Literal["all", "general", "required"]
+    user_count: int
+    license_count: int
+    monthly_cost: float
+    annual_cost: float
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SoftwareCostSnapshotCreateResponse(BaseModel):
+    snapshot_month: date
+    scope_filter: Literal["all", "general", "required"]
+    overwritten: bool = False
+    created_count: int = 0
+    rows: list[SoftwareCostSnapshotItem] = Field(default_factory=list)
+
+
+class SoftwareCostSnapshotListResponse(BaseModel):
+    scope_filter: Literal["all", "general", "required"]
+    snapshot_month_from: date | None = None
+    snapshot_month_to: date | None = None
+    total: int
+    rows: list[SoftwareCostSnapshotItem] = Field(default_factory=list)
+
+
 class ExchangeRateSettingResponse(BaseModel):
     usd_krw: float = Field(ge=0.0001)
     effective_date: date
@@ -450,6 +510,37 @@ class ExchangeRateSettingResponse(BaseModel):
 class ExchangeRateSettingUpdate(BaseModel):
     usd_krw: float = Field(ge=0.0001)
     effective_date: date | None = None
+
+
+class BrandingSettingsUpdate(BaseModel):
+    service_title: str = Field(default="", max_length=200)
+    service_subtitle: str = Field(default="", max_length=500)
+    company_logo_path: str = Field(default="", max_length=500)
+    footer_text: str = Field(default="", max_length=1000)
+
+
+class BrandingSettingsResponse(BaseModel):
+    service_title: str
+    service_subtitle: str
+    company_logo_path: str
+    footer_text: str
+
+
+class SystemInfoSslInfo(BaseModel):
+    # Reserved for future SSL expiry integration.
+    certificate_expires_at: datetime | None = None
+    days_until_expiry: int | None = None
+
+
+class SystemInfoResponse(BaseModel):
+    service_name: str
+    version: str
+    external_access_url: str
+    deployment_environment: str
+    logo_configured: bool
+    smtp_configured: bool
+    ldap_configured: bool
+    ssl_info: SystemInfoSslInfo = Field(default_factory=SystemInfoSslInfo)
 
 
 class MailSmtpConfigUpdate(BaseModel):
@@ -655,6 +746,33 @@ class AssetHistoryResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AssetLabelPreviewRequest(BaseModel):
+    asset_ids: list[int] = Field(default_factory=list)
+
+
+class AssetLabelExcludedItem(BaseModel):
+    asset_id: int
+    asset_name: str
+    reason: str
+
+
+class AssetLabelItem(BaseModel):
+    asset_id: int
+    asset_name: str
+    asset_code: str
+    owner: str = "미지정"
+    purchase_date: date | None = None
+    rental_start_date: date | None = None
+    rental_end_date: date | None = None
+    qr_code_data_url: str
+
+
+class AssetLabelPreviewResponse(BaseModel):
+    branding_logo_path: str = ""
+    labels: list[AssetLabelItem] = Field(default_factory=list)
+    excluded: list[AssetLabelExcludedItem] = Field(default_factory=list)
 
 
 

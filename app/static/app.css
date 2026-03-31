@@ -49,6 +49,17 @@ body {
   align-items: flex-end;
 }
 
+.brand-area {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.brand-text {
+  min-width: 0;
+}
+
 .topbar h1 {
   margin: 0;
   font-size: 2rem;
@@ -58,6 +69,34 @@ body {
 .topbar p {
   margin: 6px 0 0;
   color: var(--muted);
+}
+
+.brand-logo {
+  width: 58px;
+  height: 58px;
+  object-fit: contain;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+  padding: 4px;
+}
+
+.login-branding {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.login-brand-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #214463;
+}
+
+.login-brand-logo {
+  width: 52px;
+  height: 52px;
 }
 
 .user-area {
@@ -72,6 +111,19 @@ body {
   margin: 0 auto;
   width: 100%;
   padding: 0 var(--layout-gutter) 28px;
+}
+
+.page-footer {
+  max-width: min(var(--layout-max-width), calc(100vw - (var(--layout-gutter) * 2)));
+  margin: 0 auto 18px;
+  padding: 0 var(--layout-gutter);
+}
+
+.page-footer p {
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin: 4px 0 0;
 }
 
 .card {
@@ -97,6 +149,25 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 10px;
+}
+
+.asset-list-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#selectAllAssetsCheckbox,
+.asset-select-checkbox {
+  width: 16px;
+  height: 16px;
+}
+
+.asset-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .login-form,
@@ -295,6 +366,23 @@ button:hover {
   justify-content: flex-end;
   margin-bottom: 10px;
 }
+
+.software-cost-summary-wrap {
+  margin-top: 8px;
+}
+
+.software-cost-summary-table {
+  min-width: 760px;
+}
+
+.software-cost-summary-table tbody tr {
+  cursor: default;
+}
+
+.software-cost-summary-table tbody tr:hover {
+  background: #f8fbff;
+}
+
 .summary-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -830,6 +918,10 @@ tbody tr:hover {
     flex-direction: column;
     align-items: flex-start;
   }
+
+  .brand-area {
+    width: 100%;
+  }
 }
 
 .inline-edit {
@@ -1125,6 +1217,11 @@ tbody tr:hover {
   .field-hint {
     text-align: left;
   }
+
+  .branding-logo-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 
@@ -1404,6 +1501,50 @@ tbody tr:hover {
   flex-wrap: wrap;
 }
 
+.branding-form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.branding-logo-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.branding-logo-row .setting-field {
+  min-width: min(360px, 100%);
+}
+
+.branding-preview-box {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.branding-preview-logo {
+  width: 72px;
+  height: 72px;
+}
+
+.system-info-table {
+  min-width: 560px;
+}
+
+.system-info-table th {
+  width: 220px;
+  white-space: nowrap;
+}
+
+.system-info-table td {
+  color: #2d4966;
+  font-weight: 600;
+  word-break: break-all;
+}
 
 .software-assign-toolbar {
   display: grid;

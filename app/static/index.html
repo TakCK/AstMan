@@ -9,9 +9,12 @@
 <body>
   <div class="ambient"></div>
   <header class="topbar">
-    <div>
-      <h1>사내 IT 자산관리</h1>
-      <p>통합 대시보드에서 하드웨어/소프트웨어를 분리 관리하고 사용자/관리자/LDAP 설정을 한 화면에서 운영하세요.</p>
+    <div class="brand-area">
+      <img id="headerBrandLogo" class="brand-logo hidden" alt="회사 로고" />
+      <div class="brand-text">
+        <h1 id="serviceTitle">사내 IT 자산관리</h1>
+        <p id="serviceSubtitle">통합 대시보드에서 하드웨어/소프트웨어를 분리 관리하고 사용자/관리자/LDAP 설정을 한 화면에서 운영하세요.</p>
+      </div>
     </div>
     <div class="user-area">
       <span id="userInfo">로그인 필요</span>
@@ -21,6 +24,11 @@
 
   <main class="container">
     <section class="card" id="loginPanel">
+      <div class="login-branding">
+        <img id="loginBrandLogo" class="brand-logo login-brand-logo hidden" alt="회사 로고" />
+        <p id="loginServiceTitle" class="login-brand-title">사내 IT 자산관리</p>
+        <p id="loginServiceSubtitle" class="muted">통합 대시보드에서 하드웨어/소프트웨어를 분리 관리하고 사용자/관리자/LDAP 설정을 한 화면에서 운영하세요.</p>
+      </div>
       <h2>로그인</h2>
       <form id="loginForm" class="login-form">
         <label>아이디<input id="username" value="admin" required /></label>
@@ -63,6 +71,32 @@
         <article class="card">
           <h3>카테고리별 현황</h3>
           <div id="categoryBoard" class="chip-board"></div>
+        </article>
+        <article class="card">
+          <div class="card-head">
+            <h3>일반 라이선스/구독 비용 현황</h3>
+            <div id="softwareCostSummaryScopeTabs" class="period-tabs" role="tablist" aria-label="소프트웨어 비용 집계 구분 선택">
+              <button type="button" class="period-tab-btn active" data-scope="all">전체</button>
+              <button type="button" class="period-tab-btn" data-scope="required">필수</button>
+              <button type="button" class="period-tab-btn" data-scope="general">일반</button>
+            </div>
+          </div>
+          <p id="softwareCostSummaryMeta" class="muted">데이터를 불러오는 중입니다.</p>
+          <div class="table-wrap software-cost-summary-wrap">
+            <table class="software-cost-summary-table">
+              <thead>
+                <tr>
+                  <th>팀명</th>
+                  <th>사용자 수</th>
+                  <th>라이선스 수</th>
+                  <th>월 비용</th>
+                  <th>연 비용</th>
+                  <th>라이선스 종류 수</th>
+                </tr>
+              </thead>
+              <tbody id="softwareCostSummaryBody"></tbody>
+            </table>
+          </div>
         </article>
         <article class="card">
           <div class="card-head">
@@ -437,13 +471,18 @@
         <article class="card">
           <div class="card-head">
             <h3>자산 목록</h3>
-            <button id="exportAssetsCsvBtn" type="button" class="ghost-btn">CSV 다운로드</button>
+            <div class="asset-list-head-actions">
+              <span id="selectedAssetsCount" class="inline-hint">선택 0건</span>
+              <button id="printSelectedLabelsBtn" type="button" class="ghost-btn" disabled>선택 스티커 출력</button>
+              <button id="exportAssetsCsvBtn" type="button" class="ghost-btn">CSV 다운로드</button>
+            </div>
           </div>
           <p class="muted">행 클릭 시 상세 수정 팝업이 열리고, 우측 빠른수정에서 상태/분류를 즉시 반영할 수 있습니다.</p>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
+                  <th><input id="selectAllAssetsCheckbox" type="checkbox" aria-label="전체 선택" /></th>
                   <th>자산코드</th>
                   <th>자산명</th>
                   <th>카테고리</th>
@@ -454,7 +493,7 @@
                   <th>위치</th>
                   
                   <th>빠른수정(상태/분류)</th>
-                  <th>이력</th>
+                  <th>작업</th>
                 </tr>
               </thead>
               <tbody id="assetTableBody"></tbody>
@@ -922,6 +961,8 @@
           <nav class="subtabs settings-nested-subtabs" id="settingsMiscSubtabs">
             <button class="subtab-btn active" type="button" data-settings-misc-tab="ldap">LDAP</button>
             <button class="subtab-btn" type="button" data-settings-misc-tab="mail">메일</button>
+            <button class="subtab-btn" type="button" data-settings-misc-tab="branding">브랜딩</button>
+            <button class="subtab-btn" type="button" data-settings-misc-tab="system-info">시스템 정보</button>
           </nav>
 
           <section id="settings-misc-subtab-ldap" class="settings-nested-subtab-section settings-misc-subtab-section active">
@@ -1054,7 +1095,7 @@
             </div>
           </section>
 
-          <section id="settings-misc-subtab-mail" class="settings-nested-subtab-section settings-misc-subtab-section">
+            <section id="settings-misc-subtab-mail" class="settings-nested-subtab-section settings-misc-subtab-section">
             <nav class="subtabs settings-nested-subtabs" id="settingsMailSubtabs">
               <button class="subtab-btn active" type="button" data-settings-mail-tab="smtp">SMTP</button>
               <button class="subtab-btn" type="button" data-settings-mail-tab="admin">관리자 메일</button>
@@ -1202,10 +1243,65 @@
               </article>
             </section>
           </section>
+
+          <section id="settings-misc-subtab-branding" class="settings-nested-subtab-section settings-misc-subtab-section">
+            <article class="card">
+              <h3>브랜딩 설정</h3>
+              <p class="muted">서비스명, 부제, 로고를 설정합니다.</p>
+              <div class="branding-form-grid">
+                <label class="setting-field">
+                  <span>서비스명</span>
+                  <input id="brandingServiceTitle" placeholder="예: 사내 IT 자산관리" maxlength="200" />
+                </label>
+                <label class="setting-field">
+                  <span>부제</span>
+                  <input id="brandingServiceSubtitle" placeholder="예: 자산 운영 통합 관리" maxlength="500" />
+                </label>
+              </div>
+              <div class="branding-logo-row">
+                <label class="setting-field">
+                  <span>회사 CI(로고)</span>
+                  <input id="brandingLogoFile" type="file" accept="image/png,image/jpeg" />
+                </label>
+                <button id="uploadBrandingLogoBtn" type="button" class="ghost-btn">로고 업로드</button>
+              </div>
+              <div class="branding-preview-box">
+                <img id="brandingLogoPreview" class="brand-logo branding-preview-logo hidden" alt="현재 로고" />
+                <p id="brandingLogoPreviewText" class="inline-hint">현재 로고가 없습니다.</p>
+              </div>
+              <div class="software-mail-actions">
+                <button id="saveBrandingSettingsBtn" type="button" class="primary-btn">브랜딩 저장</button>
+              </div>
+            </article>
+          </section>
+
+          <section id="settings-misc-subtab-system-info" class="settings-nested-subtab-section settings-misc-subtab-section">
+            <article class="card">
+              <h3>시스템 정보</h3>
+              <p class="muted">운영 상태를 확인하는 읽기 전용 정보입니다. 도메인/SSL 등록 기능은 제공하지 않습니다.</p>
+              <div class="table-wrap">
+                <table class="system-info-table">
+                  <tbody>
+                    <tr><th>서비스명</th><td id="systemInfoServiceName">-</td></tr>
+                    <tr><th>현재 버전</th><td id="systemInfoVersion">-</td></tr>
+                    <tr><th>외부 접속 URL</th><td id="systemInfoExternalUrl">-</td></tr>
+                    <tr><th>배포 환경</th><td id="systemInfoEnvironment">-</td></tr>
+                    <tr><th>로고 설정 여부</th><td id="systemInfoLogoConfigured">-</td></tr>
+                    <tr><th>SMTP 설정 여부</th><td id="systemInfoSmtpConfigured">-</td></tr>
+                    <tr><th>LDAP 설정 여부</th><td id="systemInfoLdapConfigured">-</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </section>
+          </section>
         </section>
       </section>
     </section>
   </main>
+  <footer class="page-footer">
+    <p id="footerText" class="muted">AstMan © 2026 TakCK · MIT License</p>
+  </footer>
 
     <div id="userMailPreviewModal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-body mail-preview-modal-body">

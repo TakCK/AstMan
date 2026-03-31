@@ -1,7 +1,7 @@
 ﻿from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Integer, Numeric, String, Text, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -124,6 +124,23 @@ class AssetHistory(Base):
     actor_username: Mapped[str] = mapped_column(String(100), nullable=False)
     changed_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SoftwareCostSnapshot(Base):
+    __tablename__ = "software_cost_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_month", "scope", "team_name", name="uq_software_cost_snapshots_month_scope_team"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    snapshot_month: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    team_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    user_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    license_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    monthly_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    annual_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 

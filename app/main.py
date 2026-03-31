@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from . import crud, legacy_main, security
 from .database import Base, SessionLocal, engine
 from .jobs import ldap_sync_job
-from .routers import assets, auth, dashboard, ldap, software, users
+from .routers import assets, auth, branding, dashboard, ldap, software, users
 
 app = FastAPI(
     title="IT 자산관리 시스템",
@@ -37,6 +37,7 @@ app.include_router(dashboard.router)
 app.include_router(assets.router)
 app.include_router(software.router)
 app.include_router(ldap.router)
+app.include_router(branding.router)
 
 
 @app.on_event("startup")

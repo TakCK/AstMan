@@ -8,6 +8,7 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import crud, models
@@ -58,7 +59,7 @@ def _to_date_text(value: Any) -> str:
 
 def _normalize_department(value: str | None) -> str:
     text = str(value or "").strip()
-    return text or "미분류"
+    return text or "미할당"
 
 
 def _coerce_detail_item(raw: Any) -> dict[str, Any]:
@@ -133,7 +134,7 @@ def _extract_license_assignees(
     for username in usernames:
         detail = detail_map.get(username, {})
         display_name = display_name_map.get(username, username)
-        department = department_map.get(username, "미분류")
+        department = department_map.get(username, "미할당")
         start_date = _to_date_text(detail.get("start_date")) or default_start_date
         end_date = _to_date_text(detail.get("end_date")) or default_end_date
 
@@ -154,6 +155,269 @@ def _monthly_unit_cost(subscription_type: str, unit_cost_krw: float) -> float:
     if str(subscription_type or "").strip() == "연 구독":
         return round(unit_cost_krw / 12.0, 2)
     return round(unit_cost_krw, 2)
+
+
+def _normalize_scope_filter(scope_filter: str | None) -> str:
+    key = str(scope_filter or "").strip().lower()
+    if key in {"required", "필수", "mandatory", "critical"}:
+        return "required"
+    if key in {"general", "일반"}:
+        return "general"
+    return "all"
+
+
+def _match_scope_filter(scope_filter: str, normalized_scope: str) -> bool:
+    if scope_filter == "required":
+        return normalized_scope == "필수"
+    if scope_filter == "general":
+        return normalized_scope == "일반"
+    return True
+
+
+def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all") -> dict[str, Any]:
+    normalized_filter = _normalize_scope_filter(scope_filter)
+
+    department_map, display_name_map = _build_directory_user_maps(db)
+    exchange_rate_setting = crud.get_exchange_rate_setting(db)
+    usd_krw_rate = float(exchange_rate_setting.get("usd_krw") or crud.DEFAULT_USD_KRW_RATE)
+
+    licenses = (
+        db.query(models.SoftwareLicense)
+        .order_by(models.SoftwareLicense.product_name.asc(), models.SoftwareLicense.id.asc())
+        .all()
+    )
+
+    team_buckets: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "users": set(),
+            "assigned_license_count": 0,
+            "monthly_cost": 0.0,
+            "license_types": set(),
+        }
+    )
+
+    overall_users: set[str] = set()
+    overall_assigned_license_count = 0
+    overall_monthly_cost = 0.0
+    overall_license_types: set[int] = set()
+
+    for license_row in licenses:
+        normalized_scope = crud.normalize_license_scope(getattr(license_row, "license_scope", None))
+        if not _match_scope_filter(normalized_filter, normalized_scope):
+            continue
+
+        unit_cost_krw = _to_krw_cost(
+            license_row.purchase_cost,
+            license_row.purchase_currency,
+            usd_krw_rate,
+        )
+        if unit_cost_krw <= 0:
+            continue
+
+        monthly_unit_cost = _monthly_unit_cost(str(license_row.subscription_type or ""), unit_cost_krw)
+        assignee_rows = _extract_license_assignees(license_row, department_map, display_name_map)
+        if not assignee_rows:
+            continue
+
+        assignment_count_by_user: dict[str, int] = defaultdict(int)
+        raw_assignees = [
+            str(value or "").strip()
+            for value in (license_row.assignees if isinstance(license_row.assignees, list) else [])
+            if str(value or "").strip()
+        ]
+        for username in raw_assignees:
+            assignment_count_by_user[username] += 1
+
+        if not assignment_count_by_user:
+            for row in assignee_rows:
+                username = str(row.get("username") or "").strip()
+                if username:
+                    assignment_count_by_user[username] += 1
+
+        if not assignment_count_by_user:
+            continue
+
+        team_by_user: dict[str, str] = {}
+        for row in assignee_rows:
+            username = str(row.get("username") or "").strip()
+            if not username:
+                continue
+            team_by_user[username] = _normalize_department(row.get("department"))
+
+        license_id = _to_int(getattr(license_row, "id", 0), default=0)
+
+        for username, seat_count in assignment_count_by_user.items():
+            count = max(0, _to_int(seat_count, default=0))
+            if count <= 0:
+                continue
+
+            team_name = _normalize_department(team_by_user.get(username) or department_map.get(username))
+            bucket = team_buckets[team_name]
+            bucket["users"].add(username)
+            bucket["assigned_license_count"] += count
+            bucket["monthly_cost"] += float(monthly_unit_cost) * float(count)
+            if license_id > 0:
+                bucket["license_types"].add(license_id)
+                overall_license_types.add(license_id)
+
+            overall_users.add(username)
+            overall_assigned_license_count += count
+            overall_monthly_cost += float(monthly_unit_cost) * float(count)
+
+    team_summary = [
+        {
+            "team_name": team_name,
+            "user_count": len(bucket["users"]),
+            "assigned_license_count": _to_int(bucket["assigned_license_count"]),
+            "monthly_cost": round(_to_float(bucket["monthly_cost"]), 2),
+            "yearly_cost": round(_to_float(bucket["monthly_cost"]) * 12.0, 2),
+            "license_type_count": len(bucket["license_types"]),
+        }
+        for team_name, bucket in team_buckets.items()
+    ]
+    team_summary.sort(key=lambda row: (-float(row["monthly_cost"]), row["team_name"]))
+
+    overall_summary = {
+        "team_count": len(team_summary),
+        "user_count": len(overall_users),
+        "assigned_license_count": overall_assigned_license_count,
+        "monthly_cost": round(overall_monthly_cost, 2),
+        "yearly_cost": round(overall_monthly_cost * 12.0, 2),
+        "license_type_count": len(overall_license_types),
+    }
+
+    return {
+        "scope_filter": normalized_filter,
+        "overall_summary": overall_summary,
+        "team_summary": team_summary,
+    }
+
+
+def _normalize_snapshot_month(value: date | None) -> date:
+    target = value or date.today()
+    return date(target.year, target.month, 1)
+
+
+def create_software_cost_snapshot(
+    db: Session,
+    *,
+    snapshot_month: date | None = None,
+    scope_filter: str = "all",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    month = _normalize_snapshot_month(snapshot_month)
+    normalized_filter = _normalize_scope_filter(scope_filter)
+
+    existing_query = db.query(models.SoftwareCostSnapshot).filter(
+        models.SoftwareCostSnapshot.snapshot_month == month,
+        models.SoftwareCostSnapshot.scope == normalized_filter,
+    )
+    has_existing = existing_query.first() is not None
+    overwritten = False
+
+    if has_existing and not overwrite:
+        raise ValueError("snapshot_exists")
+
+    if has_existing and overwrite:
+        existing_query.delete(synchronize_session=False)
+        overwritten = True
+
+    summary = build_dashboard_software_cost_summary(db, scope_filter=normalized_filter)
+    team_summary = summary.get("team_summary") if isinstance(summary, dict) else []
+    team_rows = team_summary if isinstance(team_summary, list) else []
+
+    rows_to_create: list[models.SoftwareCostSnapshot] = []
+    for row in team_rows:
+        if not isinstance(row, dict):
+            continue
+        team_name = _normalize_department(str(row.get("team_name") or ""))
+        user_count = _to_int(row.get("user_count"), default=0)
+        license_count = _to_int(row.get("assigned_license_count"), default=0)
+        monthly_cost = _to_float(row.get("monthly_cost"))
+        annual_cost = _to_float(row.get("yearly_cost"))
+
+        rows_to_create.append(
+            models.SoftwareCostSnapshot(
+                snapshot_month=month,
+                team_name=team_name,
+                scope=normalized_filter,
+                user_count=max(0, user_count),
+                license_count=max(0, license_count),
+                monthly_cost=monthly_cost,
+                annual_cost=annual_cost,
+            )
+        )
+
+    if rows_to_create:
+        db.add_all(rows_to_create)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise ValueError("snapshot_exists")
+
+    rows = (
+        db.query(models.SoftwareCostSnapshot)
+        .filter(
+            models.SoftwareCostSnapshot.snapshot_month == month,
+            models.SoftwareCostSnapshot.scope == normalized_filter,
+        )
+        .order_by(models.SoftwareCostSnapshot.monthly_cost.desc(), models.SoftwareCostSnapshot.team_name.asc())
+        .all()
+    )
+
+    return {
+        "snapshot_month": month,
+        "scope_filter": normalized_filter,
+        "overwritten": overwritten,
+        "created_count": len(rows),
+        "rows": rows,
+    }
+
+
+def list_software_cost_snapshots(
+    db: Session,
+    *,
+    scope_filter: str = "all",
+    snapshot_month_from: date | None = None,
+    snapshot_month_to: date | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    normalized_filter = _normalize_scope_filter(scope_filter)
+    safe_limit = max(1, min(limit, 5000))
+
+    query = db.query(models.SoftwareCostSnapshot)
+    if normalized_filter != "all":
+        query = query.filter(models.SoftwareCostSnapshot.scope == normalized_filter)
+
+    month_from = _normalize_snapshot_month(snapshot_month_from) if snapshot_month_from else None
+    month_to = _normalize_snapshot_month(snapshot_month_to) if snapshot_month_to else None
+
+    if month_from:
+        query = query.filter(models.SoftwareCostSnapshot.snapshot_month >= month_from)
+    if month_to:
+        query = query.filter(models.SoftwareCostSnapshot.snapshot_month <= month_to)
+
+    total = query.count()
+    rows = (
+        query.order_by(
+            models.SoftwareCostSnapshot.snapshot_month.desc(),
+            models.SoftwareCostSnapshot.monthly_cost.desc(),
+            models.SoftwareCostSnapshot.team_name.asc(),
+            models.SoftwareCostSnapshot.id.asc(),
+        )
+        .limit(safe_limit)
+        .all()
+    )
+
+    return {
+        "scope_filter": normalized_filter,
+        "snapshot_month_from": month_from,
+        "snapshot_month_to": month_to,
+        "total": total,
+        "rows": rows,
+    }
 
 
 def build_general_license_report_data(db: Session) -> dict[str, Any]:
@@ -217,12 +481,12 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
 
         team_users_map: dict[str, set[str]] = defaultdict(set)
         for username in unique_assigned_users:
-            team = department_map.get(username, "미분류")
+            team = department_map.get(username, "미할당")
             team_users_map[team].add(username)
 
         team_assignment_counts: dict[str, int] = defaultdict(int)
         for username, count in assignment_count_by_user.items():
-            team = department_map.get(username, "미분류")
+            team = department_map.get(username, "미할당")
             team_assignment_counts[team] += int(count)
 
         if team_assignment_counts:
@@ -232,7 +496,7 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
                 bucket["assigned_quantity"] += int(seat_count)
                 bucket["monthly_cost"] += float(monthly_unit_cost) * float(seat_count)
 
-        teams_for_license = sorted(team_users_map.keys()) if team_users_map else ["미분류"]
+        teams_for_license = sorted(team_users_map.keys()) if team_users_map else ["미할당"]
 
         license_summary.append(
             {
@@ -351,7 +615,7 @@ def create_general_license_report_workbook(report_data: dict[str, Any]) -> Workb
     for row in report_data.get("team_summary") or []:
         ws_team.append(
             [
-                row.get("team_name", "미분류"),
+                row.get("team_name", "미할당"),
                 row.get("user_count", 0),
                 row.get("license_count", 0),
                 row.get("monthly_cost", 0),
@@ -386,7 +650,7 @@ def create_general_license_report_workbook(report_data: dict[str, Any]) -> Workb
         ws_user.append(
             [
                 row.get("user", ""),
-                row.get("team", "미분류"),
+                row.get("team", "미할당"),
                 row.get("license_name", ""),
                 row.get("unit_cost", 0),
                 row.get("owned_quantity", 0),

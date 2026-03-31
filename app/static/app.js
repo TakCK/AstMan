@@ -43,6 +43,25 @@ const DEFAULTS = {
     usd_krw: 1350,
     effective_date: TODAY_ISO,
   },
+  branding: {
+    service_title: "AstMan ITAM",
+    service_subtitle: "하드웨어 자산과 소프트웨어 라이선스를 통합 관리하는 오픈소스 웹 애플리케이션",
+    company_logo_path: "/static/branding/default_logo.png",
+    footer_text: "AstMan © 2026 TakCK · MIT License",
+  },
+  systemInfo: {
+    service_name: "AstMan ITAM",
+    version: "0.7.0",
+    external_access_url: "",
+    deployment_environment: "",
+    logo_configured: false,
+    smtp_configured: false,
+    ldap_configured: false,
+    ssl_info: {
+      certificate_expires_at: null,
+      days_until_expiry: null,
+    },
+  },
   mailSmtp: {
     smtp_host: "",
     smtp_port: 587,
@@ -216,6 +235,155 @@ async function loadExchangeRateSetting() {
   const setting = await api("/settings/exchange-rate");
   state.settings.exchangeRate = normalizeExchangeRateSetting(setting);
   applyExchangeRateInputs();
+}
+
+function normalizeBrandingSetting(source) {
+  const base = source || {};
+  const serviceTitle = String(base.service_title || "").trim().slice(0, 200);
+  const serviceSubtitle = String(base.service_subtitle || "").trim().slice(0, 500);
+  const footerText = String(base.footer_text || "").trim().slice(0, 1000);
+  const logoPathRaw = String(base.company_logo_path || "").trim().slice(0, 500);
+  const logoPath = logoPathRaw.startsWith("/static/") ? logoPathRaw : "";
+
+  return {
+    service_title: serviceTitle || DEFAULTS.branding.service_title,
+    service_subtitle: serviceSubtitle || DEFAULTS.branding.service_subtitle,
+    company_logo_path: logoPath,
+    footer_text: footerText,
+  };
+}
+
+function buildBrandLogoUrl(path) {
+  if (!path) return "";
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}v=${Date.now()}`;
+}
+
+function applyBrandingToView() {
+  const branding = normalizeBrandingSetting(state.settings.branding);
+  state.settings.branding = branding;
+
+  document.title = branding.service_title;
+  if (serviceTitle) serviceTitle.textContent = branding.service_title;
+  if (serviceSubtitle) serviceSubtitle.textContent = branding.service_subtitle;
+  if (loginServiceTitle) loginServiceTitle.textContent = branding.service_title;
+  if (loginServiceSubtitle) loginServiceSubtitle.textContent = branding.service_subtitle;
+
+  const logoUrl = buildBrandLogoUrl(branding.company_logo_path);
+  [headerBrandLogo, loginBrandLogo].forEach((target) => {
+    if (!target) return;
+    if (!logoUrl) {
+      target.classList.add("hidden");
+      target.removeAttribute("src");
+      return;
+    }
+    target.src = logoUrl;
+    target.classList.remove("hidden");
+  });
+
+  if (footerText) {
+    const nextFooterText = String(branding.footer_text || "").trim() || DEFAULTS.branding.footer_text;
+    footerText.classList.remove("hidden");
+    footerText.textContent = nextFooterText;
+  }
+}
+
+function applyBrandingInputs() {
+  const branding = normalizeBrandingSetting(state.settings.branding);
+  state.settings.branding = branding;
+
+  const serviceTitleInput = document.getElementById("brandingServiceTitle");
+  const serviceSubtitleInput = document.getElementById("brandingServiceSubtitle");
+  const logoPreview = document.getElementById("brandingLogoPreview");
+  const logoPreviewText = document.getElementById("brandingLogoPreviewText");
+
+  if (serviceTitleInput) serviceTitleInput.value = branding.service_title;
+  if (serviceSubtitleInput) serviceSubtitleInput.value = branding.service_subtitle;
+
+  const logoUrl = buildBrandLogoUrl(branding.company_logo_path);
+  if (logoPreview) {
+    if (logoUrl) {
+      logoPreview.src = logoUrl;
+      logoPreview.classList.remove("hidden");
+    } else {
+      logoPreview.classList.add("hidden");
+      logoPreview.removeAttribute("src");
+    }
+  }
+
+  if (logoPreviewText) {
+    logoPreviewText.textContent = branding.company_logo_path
+      ? "현재 로고가 적용되어 있습니다."
+      : "현재 로고가 없습니다.";
+  }
+
+  applyBrandingToView();
+}
+
+function readBrandingForm() {
+  return {
+    service_title: String(document.getElementById("brandingServiceTitle")?.value || "").trim().slice(0, 200),
+    service_subtitle: String(document.getElementById("brandingServiceSubtitle")?.value || "").trim().slice(0, 500),
+    company_logo_path: String(state.settings.branding?.company_logo_path || "").trim(),
+  };
+}
+
+async function loadBrandingSetting() {
+  const setting = await api("/settings/branding");
+  state.settings.branding = normalizeBrandingSetting(setting);
+  applyBrandingInputs();
+}
+
+function normalizeSystemInfo(source) {
+  const base = source || {};
+  const sslInfoRaw = base.ssl_info && typeof base.ssl_info === "object" ? base.ssl_info : {};
+
+  return {
+    service_name: String(base.service_name || DEFAULTS.systemInfo.service_name).trim().slice(0, 200),
+    version: String(base.version || DEFAULTS.systemInfo.version).trim().slice(0, 40),
+    external_access_url: String(base.external_access_url || "").trim().slice(0, 500),
+    deployment_environment: String(base.deployment_environment || "").trim().slice(0, 100),
+    logo_configured: Boolean(base.logo_configured),
+    smtp_configured: Boolean(base.smtp_configured),
+    ldap_configured: Boolean(base.ldap_configured),
+    ssl_info: {
+      certificate_expires_at: sslInfoRaw.certificate_expires_at ? String(sslInfoRaw.certificate_expires_at) : null,
+      days_until_expiry: Number.isInteger(Number(sslInfoRaw.days_until_expiry))
+        ? Number(sslInfoRaw.days_until_expiry)
+        : null,
+    },
+  };
+}
+
+function toConfiguredText(value) {
+  return value ? "설정됨" : "미설정";
+}
+
+function applySystemInfoInputs() {
+  const info = normalizeSystemInfo(state.settings.systemInfo);
+  state.settings.systemInfo = info;
+
+  const serviceName = document.getElementById("systemInfoServiceName");
+  const version = document.getElementById("systemInfoVersion");
+  const externalUrl = document.getElementById("systemInfoExternalUrl");
+  const environment = document.getElementById("systemInfoEnvironment");
+  const logoConfigured = document.getElementById("systemInfoLogoConfigured");
+  const smtpConfigured = document.getElementById("systemInfoSmtpConfigured");
+  const ldapConfigured = document.getElementById("systemInfoLdapConfigured");
+
+  if (serviceName) serviceName.textContent = info.service_name || "-";
+  if (version) version.textContent = info.version || "-";
+  if (externalUrl) externalUrl.textContent = info.external_access_url || "";
+  if (environment) environment.textContent = info.deployment_environment || "";
+  if (logoConfigured) logoConfigured.textContent = toConfiguredText(info.logo_configured);
+  if (smtpConfigured) smtpConfigured.textContent = toConfiguredText(info.smtp_configured);
+  if (ldapConfigured) ldapConfigured.textContent = toConfiguredText(info.ldap_configured);
+}
+
+async function loadSystemInfo() {
+  const info = await api("/settings/system-info");
+  state.settings.systemInfo = normalizeSystemInfo(info);
+  applySystemInfoInputs();
 }
 
 function parseMailEmailList(raw) {
@@ -563,8 +731,11 @@ const state = {
   dashboardSummary: null,
   dashboardCostPeriod: "month",
   dashboardCostScope: "all",
+  dashboardSoftwareCostScope: "all",
+  dashboardSoftwareCostSummary: null,
   settingsSubtab: "hardware",
   settingsAccountsSubtab: "users",
+  selectedAssetIds: new Set(),
   userDeactivation: {
     targetUserId: 0,
     targetUsername: "",
@@ -583,6 +754,8 @@ const state = {
     ldapConfig: loadLdapConfig(),
     softwareLicenseCategories: loadSoftwareMetaList(STORAGE_KEYS.softwareLicenseCategories, DEFAULTS.softwareLicenseCategories),
     exchangeRate: { ...DEFAULTS.exchangeRate },
+    branding: { ...DEFAULTS.branding },
+    systemInfo: { ...DEFAULTS.systemInfo },
     mailSmtp: { ...DEFAULTS.mailSmtp },
     mailAdmin: { ...DEFAULTS.mailAdmin },
     mailUser: { ...DEFAULTS.mailUser },
@@ -654,6 +827,13 @@ const fieldLabelMap = {
 const loginPanel = document.getElementById("loginPanel");
 const appPanel = document.getElementById("appPanel");
 const userInfo = document.getElementById("userInfo");
+const serviceTitle = document.getElementById("serviceTitle");
+const serviceSubtitle = document.getElementById("serviceSubtitle");
+const loginServiceTitle = document.getElementById("loginServiceTitle");
+const loginServiceSubtitle = document.getElementById("loginServiceSubtitle");
+const headerBrandLogo = document.getElementById("headerBrandLogo");
+const loginBrandLogo = document.getElementById("loginBrandLogo");
+const footerText = document.getElementById("footerText");
 const tabs = document.getElementById("tabs");
 const hardwareSubtabs = document.getElementById("hardwareSubtabs");
 const softwareSubtabs = document.getElementById("softwareSubtabs");
@@ -671,6 +851,9 @@ const dashboardCostPeriodTabs = document.getElementById("dashboardCostPeriodTabs
 const dashboardCostScopeTabs = document.getElementById("dashboardCostScopeTabs");
 const dashboardCostChart = document.getElementById("dashboardCostChart");
 const dashboardCostLegend = document.getElementById("dashboardCostLegend");
+const softwareCostSummaryScopeTabs = document.getElementById("softwareCostSummaryScopeTabs");
+const softwareCostSummaryMeta = document.getElementById("softwareCostSummaryMeta");
+const softwareCostSummaryBody = document.getElementById("softwareCostSummaryBody");
 const assetTableBody = document.getElementById("assetTableBody");
 const disposedTableBody = document.getElementById("disposedTableBody");
 const softwareTableBody = document.getElementById("softwareTableBody");
@@ -679,6 +862,9 @@ const softwareCategoryTableBody = document.getElementById("softwareCategoryTable
 const assetsPrevPageBtn = document.getElementById("assetsPrevPageBtn");
 const assetsNextPageBtn = document.getElementById("assetsNextPageBtn");
 const assetsPageInfo = document.getElementById("assetsPageInfo");
+const selectAllAssetsCheckbox = document.getElementById("selectAllAssetsCheckbox");
+const selectedAssetsCount = document.getElementById("selectedAssetsCount");
+const printSelectedLabelsBtn = document.getElementById("printSelectedLabelsBtn");
 const editModal = document.getElementById("editModal");
 const editHistoryBox = document.getElementById("editHistoryBox");
 const ldapResultBody = document.getElementById("ldapResultBody");
@@ -1512,7 +1698,7 @@ function activateSettingsMailSubtab(subtabName = "smtp") {
 function activateSettingsMiscSubtab(subtabName = "ldap") {
   const isAdmin = isAdminUser();
   let target = String(subtabName || "ldap");
-  const allowed = new Set(["ldap", "mail"]);
+  const allowed = new Set(["ldap", "mail", "branding", "system-info"]);
 
   if (!allowed.has(target)) {
     target = "ldap";
@@ -1599,6 +1785,14 @@ async function loadSettingsSubtabData(subtabName = "hardware") {
     const miscSubtab = String(state.settingsMiscSubtab || "ldap");
     if (miscSubtab === "mail") {
       await loadMailSettingsAll();
+      return;
+    }
+    if (miscSubtab === "branding") {
+      await loadBrandingSetting();
+      return;
+    }
+    if (miscSubtab === "system-info") {
+      await loadSystemInfo();
       return;
     }
     await loadLdapSchedule();
@@ -2162,6 +2356,63 @@ function renderSoftwareSummary(summary = state.dashboardSummary || {}) {
     )
     .join("");
 }
+
+function renderSoftwareCostSummary(summary = state.dashboardSoftwareCostSummary || {}) {
+  if (!softwareCostSummaryBody || !softwareCostSummaryMeta) return;
+
+  const scope = normalizeDashboardSoftwareCostScope(summary?.scope_filter || state.dashboardSoftwareCostScope);
+  state.dashboardSoftwareCostScope = scope;
+
+  softwareCostSummaryScopeTabs?.querySelectorAll(".period-tab-btn[data-scope]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.scope === scope);
+  });
+
+  const overall = summary?.overall_summary || {};
+  const rows = Array.isArray(summary?.team_summary) ? summary.team_summary : [];
+
+  if (!rows.length) {
+    softwareCostSummaryBody.innerHTML = '<tr><td colspan="6">집계할 라이선스 데이터가 없습니다.</td></tr>';
+  } else {
+    softwareCostSummaryBody.innerHTML = rows
+      .map((row) => {
+        const teamName = String(row?.team_name || "미할당").trim() || "미할당";
+        const userCount = Math.max(0, Number(row?.user_count || 0));
+        const assignedCount = Math.max(0, Number(row?.assigned_license_count || 0));
+        const monthlyCost = toCostNumber(row?.monthly_cost || 0);
+        const yearlyCost = toCostNumber(row?.yearly_cost || 0);
+        const licenseTypeCount = Math.max(0, Number(row?.license_type_count || 0));
+
+        return `
+          <tr>
+            <td>${escapeHtml(teamName)}</td>
+            <td>${userCount.toLocaleString("ko-KR")}</td>
+            <td>${assignedCount.toLocaleString("ko-KR")}</td>
+            <td>${escapeHtml(formatCostDisplay(monthlyCost))}</td>
+            <td>${escapeHtml(formatCostDisplay(yearlyCost))}</td>
+            <td>${licenseTypeCount.toLocaleString("ko-KR")}</td>
+          </tr>
+        `;
+      })
+      .join("");
+  }
+
+  const scopeLabel = softwareCostSummaryScopeLabels[scope] || softwareCostSummaryScopeLabels.all;
+  const teamCount = Math.max(0, Number(overall?.team_count || rows.length || 0));
+  const userCount = Math.max(0, Number(overall?.user_count || 0));
+  const assignedCount = Math.max(0, Number(overall?.assigned_license_count || 0));
+  const monthlyCost = toCostNumber(overall?.monthly_cost || 0);
+  const yearlyCost = toCostNumber(overall?.yearly_cost || 0);
+  const licenseTypeCount = Math.max(0, Number(overall?.license_type_count || 0));
+
+  softwareCostSummaryMeta.textContent =
+    `필터: ${scopeLabel} / 팀 ${teamCount.toLocaleString("ko-KR")}개 / `
+    + `사용자 ${userCount.toLocaleString("ko-KR")}명 / `
+    + `라이선스 ${assignedCount.toLocaleString("ko-KR")}개 / `
+    + `월 ${formatCostDisplay(monthlyCost)} / `
+    + `연 ${formatCostDisplay(yearlyCost)} / `
+    + `라이선스 종류 ${licenseTypeCount.toLocaleString("ko-KR")}개`;
+}
+
 const dashboardCostPeriodLabels = {
   month: "월 단위 (소프트웨어: 현재 기준 앞뒤 3개월)",
   quarter: "분기 단위 (소프트웨어: 현재 기준 앞뒤 3분기)",
@@ -2173,6 +2424,19 @@ const dashboardCostScopeLabels = {
   required: "필수 라이선스",
   general: "일반 라이선스",
 };
+
+const softwareCostSummaryScopeLabels = {
+  all: "전체",
+  required: "필수",
+  general: "일반",
+};
+
+function normalizeDashboardSoftwareCostScope(value) {
+  const key = String(value || "").trim().toLowerCase();
+  if (["required", "필수"].includes(key)) return "required";
+  if (["general", "일반"].includes(key)) return "general";
+  return "all";
+}
 
 function toCostNumber(value) {
   const num = Number(value);
@@ -2706,9 +2970,215 @@ function toggleRentalFields(prefix, usageTypeValue = null) {
   }
 }
 
+const labelExcludeReasonMap = {
+  asset_code_missing: "자산코드가 없어 제외됨",
+  asset_not_found: "자산을 찾을 수 없어 제외됨",
+};
+
+function getVisibleAssetIds() {
+  return (Array.isArray(state.assets) ? state.assets : [])
+    .map((asset) => Number(asset?.id || 0))
+    .filter((id) => id > 0);
+}
+
+function syncAssetSelectionControls() {
+  const visibleIds = getVisibleAssetIds();
+  const selectedVisible = visibleIds.filter((id) => state.selectedAssetIds.has(id));
+
+  if (selectAllAssetsCheckbox) {
+    if (!visibleIds.length) {
+      selectAllAssetsCheckbox.checked = false;
+      selectAllAssetsCheckbox.indeterminate = false;
+    } else {
+      selectAllAssetsCheckbox.checked = selectedVisible.length === visibleIds.length;
+      selectAllAssetsCheckbox.indeterminate =
+        selectedVisible.length > 0 && selectedVisible.length < visibleIds.length;
+    }
+  }
+
+  if (selectedAssetsCount) {
+    selectedAssetsCount.textContent = `선택 ${state.selectedAssetIds.size}건`;
+  }
+
+  if (printSelectedLabelsBtn) {
+    printSelectedLabelsBtn.disabled = state.selectedAssetIds.size === 0;
+  }
+}
+
+function toggleAssetSelection(assetId, isChecked) {
+  const id = Number(assetId || 0);
+  if (!id) return;
+  if (isChecked) {
+    state.selectedAssetIds.add(id);
+  } else {
+    state.selectedAssetIds.delete(id);
+  }
+  syncAssetSelectionControls();
+}
+
+function buildLabelsPrintHtml(preview) {
+  const labels = Array.isArray(preview?.labels) ? preview.labels : [];
+  const excluded = Array.isArray(preview?.excluded) ? preview.excluded : [];
+
+  const excludedHtml = excluded.length
+    ? `<div class="excluded-box"><strong>제외 항목</strong><ul>${excluded.map((item) => {
+      const reason = labelExcludeReasonMap[String(item?.reason || "").trim()] || "출력 제외";
+      return `<li>[${escapeHtml(item?.asset_name || `자산#${item?.asset_id || "-"}`)}] ${escapeHtml(reason)}</li>`;
+    }).join("")}</ul></div>`
+    : "";
+
+  const getRentalDateText = (item) => {
+    const start = String(item?.rental_start_date || "").trim();
+    const end = String(item?.rental_end_date || "").trim();
+    if (start && end) return `${start} ~ ${end}`;
+    return start || end || "-";
+  };
+
+  const labelsHtml = labels.map((item) => `
+    <article class="sticker">
+      <div class="code-block">
+        <img class="qr" src="${item?.qr_code_data_url || ""}" alt="QR" />
+        <table class="label-info-table">
+          <tbody>
+            <tr><th>자산코드</th><td>${escapeHtml(item?.asset_code || "-")}</td></tr>
+            <tr><th>사용자</th><td>${escapeHtml(item?.owner || "미지정")}</td></tr>
+            <tr><th>구매일자</th><td>${escapeHtml(item?.purchase_date || "-")}</td></tr>
+            <tr><th>대여일자</th><td>${escapeHtml(getRentalDateText(item))}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `).join("");
+
+  return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>자산 스티커 미리보기</title>
+  <style>
+    body { font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif; margin: 14px; color: #1a2b3f; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .toolbar button { border: none; border-radius: 8px; padding: 8px 12px; background: #1f628f; color: #fff; cursor: pointer; }
+    .excluded-box { border: 1px solid #e0c9a3; background: #fff8ec; border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+    .excluded-box ul { margin: 8px 0 0; padding-left: 18px; }
+    .sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
+    .sticker { border: 1px solid #cfd9e4; border-radius: 10px; padding: 8px; min-height: 128px; page-break-inside: avoid; }
+    .code-block { display: grid; grid-template-columns: 100px 1fr; gap: 10px; align-items: start; }
+    .qr { width: 96px; height: 96px; object-fit: contain; border: 1px solid #d9e1ea; border-radius: 4px; }
+    .label-info-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .label-info-table th, .label-info-table td { border: 1px solid #d9e1ea; padding: 4px 6px; text-align: left; vertical-align: middle; }
+    .label-info-table th { width: 84px; background: #f3f7fb; font-weight: 700; color: #2f4359; }
+    @media print {
+      body { margin: 0; padding: 6mm; }
+      .toolbar { display: none !important; }
+      .sheet { gap: 6mm; }
+      .sticker { width: 90mm; min-height: 42mm; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <strong>자산 스티커 미리보기 (${labels.length}건)</strong>
+    <button type="button" onclick="window.print()">인쇄</button>
+  </div>
+  ${excludedHtml}
+  <section class="sheet">${labelsHtml}</section>
+</body>
+</html>`;
+}
+
+function openLabelsLoadingWindow() {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    showToast("팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.");
+    return null;
+  }
+  printWindow.document.open();
+  printWindow.document.write(`<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>자산 스티커 준비 중</title>
+  <style>
+    body { font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; color: #1a2b3f; }
+  </style>
+</head>
+<body>
+  <p>스티커 미리보기를 준비하고 있습니다...</p>
+</body>
+</html>`);
+  printWindow.document.close();
+  return printWindow;
+}
+
+function openLabelsPreviewWindow(preview, printWindow = null) {
+  const labels = Array.isArray(preview?.labels) ? preview.labels : [];
+  if (!labels.length) {
+    const excluded = Array.isArray(preview?.excluded) ? preview.excluded : [];
+    if (excluded.length) {
+      showToast("출력 가능한 자산코드가 없습니다.");
+      if (printWindow && !printWindow.closed) {
+        printWindow.close();
+      }
+      return;
+    }
+  }
+
+  const targetWindow = printWindow || window.open("", "_blank");
+  if (!targetWindow) {
+    showToast("팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.");
+    return;
+  }
+
+  targetWindow.document.open();
+  targetWindow.document.write(buildLabelsPrintHtml(preview));
+  targetWindow.document.close();
+}
+
+async function openSingleAssetLabelPreview(assetId) {
+  const printWindow = openLabelsLoadingWindow();
+  if (!printWindow) return;
+  try {
+    const preview = await api(`/assets/${assetId}/label`);
+    openLabelsPreviewWindow(preview, printWindow);
+  } catch (error) {
+    if (!printWindow.closed) {
+      printWindow.close();
+    }
+    throw error;
+  }
+}
+
+async function openSelectedAssetsLabelPreview() {
+  const assetIds = [...state.selectedAssetIds];
+  if (!assetIds.length) {
+    showToast("선택된 자산이 없습니다.");
+    return;
+  }
+
+  const printWindow = openLabelsLoadingWindow();
+  if (!printWindow) return;
+
+  try {
+    const preview = await api("/assets/labels/preview", {
+      method: "POST",
+      body: JSON.stringify({ asset_ids: assetIds }),
+    });
+    openLabelsPreviewWindow(preview, printWindow);
+  } catch (error) {
+    if (!printWindow.closed) {
+      printWindow.close();
+    }
+    throw error;
+  }
+}
+
 function renderAssetRows() {
   if (!state.assets.length) {
-    assetTableBody.innerHTML = '<tr><td colspan="10">조건에 맞는 자산이 없습니다.</td></tr>';
+    assetTableBody.innerHTML = '<tr><td colspan="11">조건에 맞는 자산이 없습니다.</td></tr>';
+    syncAssetSelectionControls();
     return;
   }
 
@@ -2719,9 +3189,12 @@ function renderAssetRows() {
       const ownerId = asset.owner || "미지정";
       const ownerDisplay = getOwnerDisplayName(ownerId);
       const category = asset.category || "";
+      const assetId = Number(asset.id || 0);
+      const checked = state.selectedAssetIds.has(assetId) ? "checked" : "";
 
       return `
       <tr data-id="${asset.id}" data-status="${escapeHtml(status)}" data-owner="${escapeHtml(ownerId)}" data-category="${escapeHtml(category)}">
+        <td><input type="checkbox" class="asset-select-checkbox" data-id="${asset.id}" ${checked} /></td>
         <td>${escapeHtml(asset.asset_code || "-")}</td>
         <td>${escapeHtml(asset.name)}</td>
         <td>${escapeHtml(category || "-")}</td>
@@ -2737,11 +3210,18 @@ function renderAssetRows() {
             <button type="button" class="mini-btn apply-inline-btn" data-id="${asset.id}">반영</button>
           </div>
         </td>
-        <td><button type="button" class="mini-btn history-btn" data-id="${asset.id}">이력/수정</button></td>
+        <td>
+          <div class="asset-row-actions">
+            <button type="button" class="mini-btn label-preview-btn" data-id="${asset.id}">스티커</button>
+            <button type="button" class="mini-btn history-btn" data-id="${asset.id}">이력/수정</button>
+          </div>
+        </td>
       </tr>
     `;
     })
     .join("");
+
+  syncAssetSelectionControls();
 }
 
 function renderDisposedRows() {
@@ -3920,10 +4400,24 @@ function buildAssetQueryParams() {
   return params;
 }
 
+async function loadDashboardSoftwareCostSummary(scope = state.dashboardSoftwareCostScope) {
+  const normalizedScope = normalizeDashboardSoftwareCostScope(scope);
+  state.dashboardSoftwareCostScope = normalizedScope;
+  const summary = await api(`/dashboard/software-cost-summary?scope_filter=${encodeURIComponent(normalizedScope)}`);
+  state.dashboardSoftwareCostSummary = summary;
+  renderSoftwareCostSummary(summary);
+}
+
 async function loadDashboard() {
-  const summary = await api("/dashboard/summary");
+  const normalizedScope = normalizeDashboardSoftwareCostScope(state.dashboardSoftwareCostScope);
+  const [summary, softwareCostSummary] = await Promise.all([
+    api("/dashboard/summary"),
+    api(`/dashboard/software-cost-summary?scope_filter=${encodeURIComponent(normalizedScope)}`),
+  ]);
   state.dashboardSummary = summary;
+  state.dashboardSoftwareCostSummary = softwareCostSummary;
   renderSummary(summary);
+  renderSoftwareCostSummary(softwareCostSummary);
 }
 
 async function loadAssets(page = state.pagination.page) {
@@ -4622,6 +5116,8 @@ function applySettingInputs() {
   setCategorySettingInputs();
   updateCodePreview();
   applyLdapInputs();
+  applyBrandingInputs();
+  applySystemInfoInputs();
   applySoftwareMailInputs();
   syncSoftwareMetaControls();
 }
@@ -4818,6 +5314,11 @@ document.getElementById("loginForm").addEventListener("submit", async (event) =>
     localStorage.setItem(STORAGE_KEYS.token, state.token);
 
     state.user = await api("/me");
+    try {
+      await loadBrandingSetting();
+    } catch {
+      applyBrandingInputs();
+    }
     updateAuthView();
     applyRoleTabVisibility();
     activateTab("dashboard");
@@ -4839,6 +5340,7 @@ document.getElementById("logoutBtn").addEventListener("click", () => {
   state.directoryUsers = [];
   state.managedUsers = [];
   state.managedAdmins = [];
+  state.selectedAssetIds = new Set();
   localStorage.removeItem(STORAGE_KEYS.token);
   updateAuthView();
   applyRoleTabVisibility();
@@ -4846,6 +5348,7 @@ document.getElementById("logoutBtn").addEventListener("click", () => {
   renderAdminUserDatalist();
   renderUsersTable("user");
   renderUsersTable("admin");
+  syncAssetSelectionControls();
   updateLdapPasswordStatus();
   closeEditModal();
   showToast("로그아웃했습니다.");
@@ -5835,6 +6338,24 @@ dashboardCostScopeTabs?.addEventListener("click", (event) => {
   requestAnimationFrame(syncDashboardCardsHeight);
 });
 
+softwareCostSummaryScopeTabs?.addEventListener("click", async (event) => {
+  const button = event.target.closest(".period-tab-btn[data-scope]");
+  if (!button) return;
+
+  const scope = normalizeDashboardSoftwareCostScope(button.dataset.scope || "all");
+  if (scope === state.dashboardSoftwareCostScope && state.dashboardSoftwareCostSummary) {
+    renderSoftwareCostSummary();
+    return;
+  }
+
+  try {
+    await loadDashboardSoftwareCostSummary(scope);
+    requestAnimationFrame(syncDashboardCardsHeight);
+  } catch (error) {
+    showToast(error.message || "비용 현황을 불러오지 못했습니다.");
+  }
+});
+
 document.getElementById("addUsageType").addEventListener("change", (event) => {
   toggleRentalFields("add", event.target.value);
 });
@@ -5916,6 +6437,26 @@ document.getElementById("assetFilterForm").addEventListener("submit", async (eve
   }
 });
 
+selectAllAssetsCheckbox?.addEventListener("change", (event) => {
+  const checked = Boolean(event.target?.checked);
+  getVisibleAssetIds().forEach((assetId) => {
+    if (checked) {
+      state.selectedAssetIds.add(assetId);
+    } else {
+      state.selectedAssetIds.delete(assetId);
+    }
+  });
+  renderAssetRows();
+});
+
+printSelectedLabelsBtn?.addEventListener("click", async () => {
+  try {
+    await openSelectedAssetsLabelPreview();
+  } catch (error) {
+    showToast(error.message || "스티커 미리보기를 열지 못했습니다.");
+  }
+});
+
 document.getElementById("addGenerateAssetCodeBtn").addEventListener("click", async () => {
   try {
     await generateAssetCode("add");
@@ -5929,6 +6470,59 @@ document.getElementById("editGenerateAssetCodeBtn").addEventListener("click", as
     await generateAssetCode("edit");
   } catch (error) {
     showToast(error.message);
+  }
+});
+
+document.getElementById("saveBrandingSettingsBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) {
+      throw new Error("브랜딩 설정 변경은 관리자만 가능합니다.");
+    }
+
+    const saved = await api("/settings/branding", {
+      method: "PUT",
+      body: JSON.stringify(readBrandingForm()),
+    });
+
+    state.settings.branding = normalizeBrandingSetting(saved);
+    applyBrandingInputs();
+    showToast("브랜딩 설정을 저장했습니다.");
+  } catch (error) {
+    showToast(error.message || "브랜딩 설정 저장에 실패했습니다.");
+  }
+});
+
+document.getElementById("uploadBrandingLogoBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) {
+      throw new Error("로고 업로드는 관리자만 가능합니다.");
+    }
+
+    const fileInput = document.getElementById("brandingLogoFile");
+    const file = fileInput?.files?.[0];
+    if (!file) {
+      throw new Error("로고 파일을 선택해주세요.");
+    }
+
+    const filename = String(file.name || "").toLowerCase();
+    if (!filename.endsWith(".png") && !filename.endsWith(".jpg") && !filename.endsWith(".jpeg")) {
+      throw new Error("로고는 PNG/JPG 파일만 업로드할 수 있습니다.");
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const saved = await api("/settings/branding/logo", {
+      method: "POST",
+      body: formData,
+    });
+
+    state.settings.branding = normalizeBrandingSetting(saved);
+    applyBrandingInputs();
+    if (fileInput) fileInput.value = "";
+    showToast("로고를 업로드했습니다.");
+  } catch (error) {
+    showToast(error.message || "로고 업로드에 실패했습니다.");
   }
 });
 
@@ -6225,7 +6819,20 @@ document.getElementById("addAssetForm").addEventListener("submit", async (event)
   }
 });
 
+assetTableBody.addEventListener("change", (event) => {
+  const checkbox = event.target.closest(".asset-select-checkbox");
+  if (!checkbox) return;
+  const assetId = Number(checkbox.dataset.id || 0);
+  toggleAssetSelection(assetId, checkbox.checked);
+});
+
 assetTableBody.addEventListener("click", async (event) => {
+  const checkbox = event.target.closest(".asset-select-checkbox");
+  if (checkbox) {
+    event.stopPropagation();
+    return;
+  }
+
   const applyInlineBtn = event.target.closest(".apply-inline-btn");
   if (applyInlineBtn) {
     event.stopPropagation();
@@ -6239,6 +6846,17 @@ assetTableBody.addEventListener("click", async (event) => {
 
   if (event.target.closest(".inline-edit")) {
     event.stopPropagation();
+    return;
+  }
+
+  const labelPreviewBtn = event.target.closest(".label-preview-btn");
+  if (labelPreviewBtn) {
+    event.stopPropagation();
+    try {
+      await openSingleAssetLabelPreview(Number(labelPreviewBtn.dataset.id));
+    } catch (error) {
+      showToast(error.message || "스티커 미리보기를 열지 못했습니다.");
+    }
     return;
   }
 
@@ -6300,6 +6918,11 @@ async function initialize() {
   setupOwnerLookupInputs();
   bindOwnerDepartmentSync("add");
   bindOwnerDepartmentSync("edit");
+  try {
+    await loadBrandingSetting();
+  } catch {
+    state.settings.branding = normalizeBrandingSetting(DEFAULTS.branding);
+  }
   applySettingInputs();
   resetAddForm();
   resetSoftwareForm();
