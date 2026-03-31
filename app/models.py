@@ -28,6 +28,9 @@ class DirectoryUser(Base):
     email: Mapped[str | None] = mapped_column(String(200), nullable=True)
     department: Mapped[str | None] = mapped_column(String(120), nullable=True)
     title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    manager_dn: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    user_dn: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    object_guid: Mapped[str | None] = mapped_column(String(80), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="ldap")
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -91,8 +94,14 @@ class SoftwareLicense(Base):
     product_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     vendor: Mapped[str | None] = mapped_column(String(120), nullable=True)
     license_type: Mapped[str] = mapped_column(String(30), nullable=False, default="구독")
+    license_category: Mapped[str] = mapped_column(String(40), nullable=False, default="기타")
+    subscription_type: Mapped[str] = mapped_column(String(30), nullable=False, default="연 구독")
+    license_scope: Mapped[str] = mapped_column(String(20), nullable=False, default="일반")
+    purchase_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    purchase_currency: Mapped[str] = mapped_column(String(10), nullable=False, default="원")
     total_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     assignees: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    assignee_details: Mapped[list | None] = mapped_column(JSON, nullable=True)
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     drafter: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -114,6 +123,13 @@ class AssetHistory(Base):
     actor_username: Mapped[str] = mapped_column(String(100), nullable=False)
     changed_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+
+
+
+
+
 
 
 

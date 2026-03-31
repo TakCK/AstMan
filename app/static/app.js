@@ -6,9 +6,10 @@
   categories: "setting.asset_categories",
   seq: "asset_code_seq",
   ldapConfig: "setting.ldap_config",
-  softwareLicenseTypes: "setting.software_license_types",
-  softwareVendors: "setting.software_vendors",
+  softwareLicenseCategories: "setting.software_license_categories",
 };
+
+const TODAY_ISO = new Date().toISOString().slice(0, 10);
 
 const DEFAULTS = {
   codeTemplate: "{CAT}-{YYYY}-{SEQ4}",
@@ -30,10 +31,54 @@ const DEFAULTS = {
     user_id_attribute: "sAMAccountName",
     user_name_attribute: "displayName",
     user_email_attribute: "mail",
+    user_department_attribute: "department",
+    user_title_attribute: "title",
+    manager_dn_attribute: "manager",
+    user_dn_attribute: "distinguishedName",
+    user_guid_attribute: "objectGUID",
     size_limit: 1000,
   },
-  softwareLicenseTypes: ["구독", "영구"],
-  softwareVendors: [],
+  softwareLicenseCategories: ["생산성&협업", "개발", "디자인", "API", "클라우드&인프라", "생성형AI", "기타"],
+  exchangeRate: {
+    usd_krw: 1350,
+    effective_date: TODAY_ISO,
+  },
+  mailSmtp: {
+    smtp_host: "",
+    smtp_port: 587,
+    use_tls: true,
+    use_ssl: false,
+    smtp_username: "",
+    from_email: "",
+    has_runtime_password: false,
+    has_stored_password: false,
+  },
+  mailAdmin: {
+    enabled: false,
+    to_emails: [],
+    notify_days: 30,
+    schedule_hour: 9,
+    schedule_minute: 0,
+    include_expired: true,
+    subject_template: "[ITAM] 소프트웨어 만료 알림 ({DATE})",
+    body_template: "소프트웨어 만료 알림 ({DATE})\n\n- 조회 라이선스: {CHECKED_LICENSES}건\n- 만료 예정({NOTIFY_DAYS}일 이내): {EXPIRING_COUNT}건\n- 이미 만료: {EXPIRED_COUNT}건\n\n[만료 예정 목록]\n{EXPIRING_ITEMS}\n\n[만료 목록]\n{EXPIRED_ITEMS}",
+    last_sent_at: null,
+    last_error: null,
+    last_result: null,
+  },
+  mailUser: {
+    enabled: false,
+    notify_days: 30,
+    schedule_hour: 9,
+    schedule_minute: 0,
+    include_expired: true,
+    only_active_users: true,
+    subject_template: "[ITAM] {USER_NAME}님 소프트웨어 만료 알림 ({DATE})",
+    body_template: "안녕하세요 {USER_NAME}님,\n\n소프트웨어 라이선스 만료 안내입니다. ({DATE})\n\n- 만료 예정({NOTIFY_DAYS}일 이내): {USER_EXPIRING_COUNT}건\n- 이미 만료: {USER_EXPIRED_COUNT}건\n\n[내 만료 예정 목록]\n{EXPIRING_ITEMS}\n\n[내 만료 목록]\n{EXPIRED_ITEMS}",
+    last_sent_at: null,
+    last_error: null,
+    last_result: null,
+  },
 };
 
 function cloneDefaultCategories() {
@@ -120,6 +165,366 @@ function loadLdapConfig() {
     return { ...DEFAULTS.ldapConfig };
   }
 }
+function normalizeExchangeRateSetting(source) {
+  const rawRate = Number(source?.usd_krw);
+  const usdKrw = Number.isFinite(rawRate) && rawRate > 0 ? rawRate : Number(DEFAULTS.exchangeRate.usd_krw);
+
+  const rawDate = String(source?.effective_date || "").trim();
+  const effectiveDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : TODAY_ISO;
+
+  return {
+    usd_krw: usdKrw,
+    effective_date: effectiveDate,
+  };
+}
+
+function getUsdKrwRate() {
+  return Number(normalizeExchangeRateSetting(state.settings.exchangeRate).usd_krw || DEFAULTS.exchangeRate.usd_krw);
+}
+
+function isUsdCurrency(currency) {
+  const key = String(currency || "").trim().toLowerCase();
+  return ["usd", "달러", "$", "us$", "dollar", "미국달러"].includes(key);
+}
+
+function toKrwByCurrency(amount, currency) {
+  const base = Number(amount);
+  if (!Number.isFinite(base) || base < 0) return NaN;
+  if (!isUsdCurrency(currency)) return base;
+  return base * getUsdKrwRate();
+}
+
+function formatWon(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "-";
+  return `${Math.round(num).toLocaleString("ko-KR")}원`;
+}
+
+function applyExchangeRateInputs() {
+  const rateInput = document.getElementById("settingUsdKrwRate");
+  const dateInput = document.getElementById("settingExchangeRateDate");
+  if (!rateInput || !dateInput) return;
+
+  const normalized = normalizeExchangeRateSetting(state.settings.exchangeRate);
+  state.settings.exchangeRate = normalized;
+  rateInput.value = String(normalized.usd_krw);
+  dateInput.value = normalized.effective_date;
+}
+
+async function loadExchangeRateSetting() {
+  if (!state.token) return;
+  const setting = await api("/settings/exchange-rate");
+  state.settings.exchangeRate = normalizeExchangeRateSetting(setting);
+  applyExchangeRateInputs();
+}
+
+function parseMailEmailList(raw) {
+  const text = String(raw || "").replaceAll(";", ",").replaceAll("\n", ",");
+  return [...new Set(text.split(",").map((v) => v.trim()).filter(Boolean))];
+}
+
+function normalizeMailSmtpSetting(source) {
+  const base = source || {};
+  const smtpPort = Number(base.smtp_port);
+
+  return {
+    smtp_host: String(base.smtp_host || "").trim(),
+    smtp_port: Number.isFinite(smtpPort) ? Math.min(65535, Math.max(1, smtpPort)) : 587,
+    use_tls: Boolean(base.use_tls),
+    use_ssl: Boolean(base.use_ssl),
+    smtp_username: String(base.smtp_username || "").trim(),
+    from_email: String(base.from_email || "").trim(),
+    has_runtime_password: Boolean(base.has_runtime_password),
+    has_stored_password: Boolean(base.has_stored_password),
+  };
+}
+
+function normalizeMailAdminSetting(source) {
+  const base = source || {};
+  const notifyDays = Number(base.notify_days);
+  const scheduleHour = Number(base.schedule_hour);
+  const scheduleMinute = Number(base.schedule_minute);
+
+  return {
+    enabled: Boolean(base.enabled),
+    to_emails: Array.isArray(base.to_emails)
+      ? [...new Set(base.to_emails.map((v) => String(v || "").trim()).filter(Boolean))]
+      : [],
+    notify_days: Number.isFinite(notifyDays) ? Math.min(365, Math.max(1, notifyDays)) : 30,
+    schedule_hour: Number.isFinite(scheduleHour) ? Math.min(23, Math.max(0, scheduleHour)) : 9,
+    schedule_minute: Number.isFinite(scheduleMinute) ? Math.min(59, Math.max(0, scheduleMinute)) : 0,
+    include_expired: base.include_expired === undefined ? true : Boolean(base.include_expired),
+    subject_template: String(base.subject_template || DEFAULTS.mailAdmin.subject_template || "").slice(0, 300),
+    body_template: String(base.body_template || DEFAULTS.mailAdmin.body_template || "").slice(0, 20000),
+    last_sent_at: base.last_sent_at ? String(base.last_sent_at) : null,
+    last_error: base.last_error ? String(base.last_error) : null,
+    last_result: base.last_result && typeof base.last_result === "object" ? base.last_result : null,
+  };
+}
+
+function normalizeMailUserSetting(source) {
+  const base = source || {};
+  const notifyDays = Number(base.notify_days);
+  const scheduleHour = Number(base.schedule_hour);
+  const scheduleMinute = Number(base.schedule_minute);
+
+  return {
+    enabled: Boolean(base.enabled),
+    notify_days: Number.isFinite(notifyDays) ? Math.min(365, Math.max(1, notifyDays)) : 30,
+    schedule_hour: Number.isFinite(scheduleHour) ? Math.min(23, Math.max(0, scheduleHour)) : 9,
+    schedule_minute: Number.isFinite(scheduleMinute) ? Math.min(59, Math.max(0, scheduleMinute)) : 0,
+    include_expired: base.include_expired === undefined ? true : Boolean(base.include_expired),
+    only_active_users: base.only_active_users === undefined ? true : Boolean(base.only_active_users),
+    subject_template: String(base.subject_template || DEFAULTS.mailUser.subject_template || "").slice(0, 300),
+    body_template: String(base.body_template || DEFAULTS.mailUser.body_template || "").slice(0, 20000),
+    last_sent_at: base.last_sent_at ? String(base.last_sent_at) : null,
+    last_error: base.last_error ? String(base.last_error) : null,
+    last_result: base.last_result && typeof base.last_result === "object" ? base.last_result : null,
+  };
+}
+
+function applyMailSmtpInputs() {
+  const config = normalizeMailSmtpSetting(state.settings.mailSmtp);
+  state.settings.mailSmtp = config;
+
+  const host = document.getElementById("smtpHost");
+  if (!host) return;
+
+  const port = document.getElementById("smtpPort");
+  const useTls = document.getElementById("smtpUseTls");
+  const useSsl = document.getElementById("smtpUseSsl");
+  const username = document.getElementById("smtpUsername");
+  const fromEmail = document.getElementById("smtpFromEmail");
+  const passwordInput = document.getElementById("smtpPassword");
+
+  host.value = config.smtp_host;
+  port.value = String(config.smtp_port || 587);
+  useTls.checked = config.use_tls;
+  useSsl.checked = config.use_ssl;
+  username.value = config.smtp_username;
+  fromEmail.value = config.from_email;
+  if (passwordInput) passwordInput.value = "";
+
+  renderMailSmtpStatus();
+}
+
+function applyMailAdminInputs() {
+  const config = normalizeMailAdminSetting(state.settings.mailAdmin);
+  state.settings.mailAdmin = config;
+
+  const enabled = document.getElementById("adminMailEnabled");
+  if (!enabled) return;
+
+  document.getElementById("adminMailEnabled").checked = config.enabled;
+  document.getElementById("adminMailToEmails").value = (config.to_emails || []).join(", ");
+  document.getElementById("adminMailNotifyDays").value = String(config.notify_days || 30);
+  document.getElementById("adminMailScheduleHour").value = String(config.schedule_hour ?? 9);
+  document.getElementById("adminMailScheduleMinute").value = String(config.schedule_minute ?? 0);
+  document.getElementById("adminMailIncludeExpired").checked = config.include_expired;
+  document.getElementById("adminMailSubjectTemplate").value = config.subject_template || "";
+  document.getElementById("adminMailBodyTemplate").value = config.body_template || "";
+
+  renderAdminMailStatus();
+}
+
+function applyMailUserInputs() {
+  const config = normalizeMailUserSetting(state.settings.mailUser);
+  state.settings.mailUser = config;
+
+  const enabled = document.getElementById("userMailEnabled");
+  if (!enabled) return;
+
+  document.getElementById("userMailEnabled").checked = config.enabled;
+  document.getElementById("userMailNotifyDays").value = String(config.notify_days || 30);
+  document.getElementById("userMailScheduleHour").value = String(config.schedule_hour ?? 9);
+  document.getElementById("userMailScheduleMinute").value = String(config.schedule_minute ?? 0);
+  document.getElementById("userMailIncludeExpired").checked = config.include_expired;
+  document.getElementById("userMailOnlyActiveUsers").checked = config.only_active_users;
+  document.getElementById("userMailSubjectTemplate").value = config.subject_template || "";
+  document.getElementById("userMailBodyTemplate").value = config.body_template || "";
+
+  renderUserMailStatus();
+}
+
+function renderMailSmtpStatus() {
+  if (!smtpConfigStatus) return;
+  const config = normalizeMailSmtpSetting(state.settings.mailSmtp);
+  const passwordStatus = config.has_stored_password
+    ? "설정됨(서버 암호화 저장)"
+    : config.has_runtime_password
+      ? "설정됨(현재 서버 메모리)"
+      : "미설정";
+  smtpConfigStatus.textContent = `SMTP 비밀번호: ${passwordStatus}`;
+}
+
+function renderAdminMailStatus() {
+  if (!adminMailStatus) return;
+  const config = normalizeMailAdminSetting(state.settings.mailAdmin);
+  const lastSent = config.last_sent_at ? new Date(config.last_sent_at).toLocaleString() : "없음";
+  const result = config.last_result || {};
+  const resultText = config.last_result
+    ? ` / 최근 결과: 만료예정 ${Number(result.expiring_count || 0)}건, 만료 ${Number(result.expired_count || 0)}건`
+    : "";
+  const lastError = config.last_error ? ` / 최근 오류: ${config.last_error}` : "";
+  adminMailStatus.textContent = `최근 발송: ${lastSent}${resultText}${lastError}`;
+}
+
+function renderUserMailStatus() {
+  if (!userMailStatus) return;
+  const config = normalizeMailUserSetting(state.settings.mailUser);
+  const lastSent = config.last_sent_at ? new Date(config.last_sent_at).toLocaleString() : "없음";
+  const result = config.last_result || {};
+  const resultText = config.last_result
+    ? ` / 최근 결과: 대상 ${Number(result.target_users || 0)}명, 발송 ${Number(result.sent_users || 0)}명, 실패 ${Number(result.failed_users || 0)}명`
+    : "";
+  const lastError = config.last_error ? ` / 최근 오류: ${config.last_error}` : "";
+  userMailStatus.textContent = `최근 발송: ${lastSent}${resultText}${lastError}`;
+}
+
+function applyMailSettingInputs() {
+  applyMailSmtpInputs();
+  applyMailAdminInputs();
+  applyMailUserInputs();
+}
+
+function readMailSmtpForm() {
+  const smtpPort = Number(document.getElementById("smtpPort")?.value || 587);
+  const payload = {
+    smtp_host: String(document.getElementById("smtpHost")?.value || "").trim(),
+    smtp_port: smtpPort,
+    use_tls: Boolean(document.getElementById("smtpUseTls")?.checked),
+    use_ssl: Boolean(document.getElementById("smtpUseSsl")?.checked),
+    smtp_username: String(document.getElementById("smtpUsername")?.value || "").trim() || null,
+    smtp_password: String(document.getElementById("smtpPassword")?.value || "").trim() || null,
+    from_email: String(document.getElementById("smtpFromEmail")?.value || "").trim() || null,
+  };
+
+  if (!Number.isInteger(payload.smtp_port) || payload.smtp_port < 1 || payload.smtp_port > 65535) {
+    throw new Error("SMTP 포트는 1~65535 범위의 숫자여야 합니다.");
+  }
+
+  if (payload.use_ssl && payload.use_tls) {
+    throw new Error("SSL과 TLS는 동시에 선택할 수 없습니다.");
+  }
+
+  if (!payload.smtp_host) {
+    throw new Error("SMTP 서버 주소를 입력해주세요.");
+  }
+
+  return payload;
+}
+
+function readAdminMailForm() {
+  const notifyDays = Number(document.getElementById("adminMailNotifyDays")?.value || 30);
+  const scheduleHour = Number(document.getElementById("adminMailScheduleHour")?.value || 9);
+  const scheduleMinute = Number(document.getElementById("adminMailScheduleMinute")?.value || 0);
+
+  const payload = {
+    enabled: Boolean(document.getElementById("adminMailEnabled")?.checked),
+    to_emails: parseMailEmailList(document.getElementById("adminMailToEmails")?.value || ""),
+    notify_days: notifyDays,
+    schedule_hour: scheduleHour,
+    schedule_minute: scheduleMinute,
+    include_expired: Boolean(document.getElementById("adminMailIncludeExpired")?.checked),
+    subject_template: String(document.getElementById("adminMailSubjectTemplate")?.value || "").trim() || null,
+    body_template: String(document.getElementById("adminMailBodyTemplate")?.value || "").trim() || null,
+  };
+
+  if (!Number.isInteger(payload.notify_days) || payload.notify_days < 1 || payload.notify_days > 365) {
+    throw new Error("알림 기준 일수는 1~365 범위여야 합니다.");
+  }
+  if (!Number.isInteger(payload.schedule_hour) || payload.schedule_hour < 0 || payload.schedule_hour > 23) {
+    throw new Error("발송 시(0~23)를 확인해주세요.");
+  }
+  if (!Number.isInteger(payload.schedule_minute) || payload.schedule_minute < 0 || payload.schedule_minute > 59) {
+    throw new Error("발송 분(0~59)을 확인해주세요.");
+  }
+
+  if (payload.enabled && !payload.to_emails.length) {
+    throw new Error("관리자 수신 이메일 주소를 1개 이상 입력해주세요.");
+  }
+
+  if (payload.subject_template && payload.subject_template.length > 300) {
+    throw new Error("메일 제목 템플릿은 최대 300자까지 입력할 수 있습니다.");
+  }
+
+  if (payload.body_template && payload.body_template.length > 20000) {
+    throw new Error("메일 본문 템플릿은 최대 20000자까지 입력할 수 있습니다.");
+  }
+
+  return payload;
+}
+
+function readUserMailForm() {
+  const notifyDays = Number(document.getElementById("userMailNotifyDays")?.value || 30);
+  const scheduleHour = Number(document.getElementById("userMailScheduleHour")?.value || 9);
+  const scheduleMinute = Number(document.getElementById("userMailScheduleMinute")?.value || 0);
+
+  const payload = {
+    enabled: Boolean(document.getElementById("userMailEnabled")?.checked),
+    notify_days: notifyDays,
+    schedule_hour: scheduleHour,
+    schedule_minute: scheduleMinute,
+    include_expired: Boolean(document.getElementById("userMailIncludeExpired")?.checked),
+    only_active_users: Boolean(document.getElementById("userMailOnlyActiveUsers")?.checked),
+    subject_template: String(document.getElementById("userMailSubjectTemplate")?.value || "").trim() || null,
+    body_template: String(document.getElementById("userMailBodyTemplate")?.value || "").trim() || null,
+  };
+
+  if (!Number.isInteger(payload.notify_days) || payload.notify_days < 1 || payload.notify_days > 365) {
+    throw new Error("알림 기준 일수는 1~365 범위여야 합니다.");
+  }
+  if (!Number.isInteger(payload.schedule_hour) || payload.schedule_hour < 0 || payload.schedule_hour > 23) {
+    throw new Error("발송 시(0~23)를 확인해주세요.");
+  }
+  if (!Number.isInteger(payload.schedule_minute) || payload.schedule_minute < 0 || payload.schedule_minute > 59) {
+    throw new Error("발송 분(0~59)을 확인해주세요.");
+  }
+
+  if (payload.subject_template && payload.subject_template.length > 300) {
+    throw new Error("메일 제목 템플릿은 최대 300자까지 입력할 수 있습니다.");
+  }
+
+  if (payload.body_template && payload.body_template.length > 20000) {
+    throw new Error("메일 본문 템플릿은 최대 20000자까지 입력할 수 있습니다.");
+  }
+
+  return payload;
+}
+
+async function loadMailSmtpSetting() {
+  if (!state.user || state.user.role !== "admin") return;
+  const setting = await api("/settings/mail/smtp");
+  state.settings.mailSmtp = normalizeMailSmtpSetting(setting);
+  applyMailSmtpInputs();
+}
+
+async function loadMailAdminSetting() {
+  if (!state.user || state.user.role !== "admin") return;
+  const setting = await api("/settings/mail/admin");
+  state.settings.mailAdmin = normalizeMailAdminSetting(setting);
+  applyMailAdminInputs();
+}
+
+async function loadMailUserSetting() {
+  if (!state.user || state.user.role !== "admin") return;
+  const setting = await api("/settings/mail/user");
+  state.settings.mailUser = normalizeMailUserSetting(setting);
+  applyMailUserInputs();
+}
+
+async function loadMailSettingsAll() {
+  if (!state.user || state.user.role !== "admin") return;
+  await Promise.all([loadMailSmtpSetting(), loadMailAdminSetting(), loadMailUserSetting()]);
+}
+
+function applySoftwareMailInputs() {
+  applyMailSettingInputs();
+}
+
+async function loadSoftwareExpiryMailSetting() {
+  await loadMailSettingsAll();
+}
 const state = {
   token: localStorage.getItem(STORAGE_KEYS.token) || "",
   user: null,
@@ -139,13 +544,15 @@ const state = {
     enabled: false,
     interval_minutes: 60,
     has_runtime_password: false,
+    has_stored_password: false,
     last_synced_at: null,
     last_error: null,
     last_result: null,
   },
   activeMainTab: "dashboard",
   hardwareSubtab: "assets",
-  softwareSubtab: "editor",
+  softwareSubtab: "list",
+  softwareAssignedSort: { key: "expiry_key", direction: "asc" },
   pagination: {
     page: 1,
     pageSize: 50,
@@ -153,15 +560,25 @@ const state = {
   },
   dashboardDrilldown: null,
   dashboardSummary: null,
-  settingsSubtab: "general",
+  dashboardCostPeriod: "month",
+  dashboardCostScope: "all",
+  settingsSubtab: "hardware",
+  settingsAccountsSubtab: "users",
+  orgChartShowInactive: false,
+  orgChartDeptExpanded: false,
+  settingsMiscSubtab: "ldap",
+  settingsMailSubtab: "smtp",
   settings: {
     codeTemplate: localStorage.getItem(STORAGE_KEYS.codeTemplate) || DEFAULTS.codeTemplate,
     defaultOwner: localStorage.getItem(STORAGE_KEYS.defaultOwner) || DEFAULTS.defaultOwner,
     defaultManager: localStorage.getItem(STORAGE_KEYS.defaultManager) || DEFAULTS.defaultManager,
     categories: loadCategorySettings(),
     ldapConfig: loadLdapConfig(),
-    softwareLicenseTypes: loadSoftwareMetaList(STORAGE_KEYS.softwareLicenseTypes, DEFAULTS.softwareLicenseTypes),
-    softwareVendors: loadSoftwareMetaList(STORAGE_KEYS.softwareVendors, DEFAULTS.softwareVendors),
+    softwareLicenseCategories: loadSoftwareMetaList(STORAGE_KEYS.softwareLicenseCategories, DEFAULTS.softwareLicenseCategories),
+    exchangeRate: { ...DEFAULTS.exchangeRate },
+    mailSmtp: { ...DEFAULTS.mailSmtp },
+    mailAdmin: { ...DEFAULTS.mailAdmin },
+    mailUser: { ...DEFAULTS.mailUser },
   },
 };
 
@@ -176,6 +593,14 @@ const usageTypeValues = [
   "서버장비",
   "네트워크장비",
 ];
+
+const softwareSubscriptionTypeValues = ["영구 구매", "연 구독", "월 구독", "사용량만큼 지불"];
+
+function normalizeSoftwareLicenseScope(value) {
+  const key = String(value || "").trim().toLocaleLowerCase();
+  if (["필수", "required", "mandatory", "critical"].includes(key)) return "필수";
+  return "일반";
+}
 
 const usageShortMap = {
   주장비: "PRI",
@@ -226,18 +651,24 @@ const tabs = document.getElementById("tabs");
 const hardwareSubtabs = document.getElementById("hardwareSubtabs");
 const softwareSubtabs = document.getElementById("softwareSubtabs");
 const settingsSubtabs = document.getElementById("settingsSubtabs");
+const settingsAccountsSubtabs = document.getElementById("settingsAccountsSubtabs");
+const settingsMiscSubtabs = document.getElementById("settingsMiscSubtabs");
+const settingsMailSubtabs = document.getElementById("settingsMailSubtabs");
 const toast = document.getElementById("toast");
 const summaryCards = document.getElementById("summaryCards");
 const softwareSummaryCards = document.getElementById("softwareSummaryCards");
 const statusBoard = document.getElementById("statusBoard");
 const usageBoard = document.getElementById("usageBoard");
 const categoryBoard = document.getElementById("categoryBoard");
+const dashboardCostPeriodTabs = document.getElementById("dashboardCostPeriodTabs");
+const dashboardCostScopeTabs = document.getElementById("dashboardCostScopeTabs");
+const dashboardCostChart = document.getElementById("dashboardCostChart");
+const dashboardCostLegend = document.getElementById("dashboardCostLegend");
 const assetTableBody = document.getElementById("assetTableBody");
 const disposedTableBody = document.getElementById("disposedTableBody");
 const softwareTableBody = document.getElementById("softwareTableBody");
 const softwareAssignUserTableBody = document.getElementById("softwareAssignUserTableBody");
-const softwareTypeTableBody = document.getElementById("softwareTypeTableBody");
-const softwareVendorTableBody = document.getElementById("softwareVendorTableBody");
+const softwareCategoryTableBody = document.getElementById("softwareCategoryTableBody");
 const assetsPrevPageBtn = document.getElementById("assetsPrevPageBtn");
 const assetsNextPageBtn = document.getElementById("assetsNextPageBtn");
 const assetsPageInfo = document.getElementById("assetsPageInfo");
@@ -247,11 +678,22 @@ const ldapResultBody = document.getElementById("ldapResultBody");
 const ldapResultInfo = document.getElementById("ldapResultInfo");
 const ldapPasswordStatus = document.getElementById("ldapPasswordStatus");
 const ldapScheduleInfo = document.getElementById("ldapScheduleInfo");
+const smtpConfigStatus = document.getElementById("smtpConfigStatus");
+const adminMailStatus = document.getElementById("adminMailStatus");
+const userMailStatus = document.getElementById("userMailStatus");
+const userMailPreviewModal = document.getElementById("userMailPreviewModal");
+const userMailPreviewSummary = document.getElementById("userMailPreviewSummary");
+const userMailPreviewTableBody = document.getElementById("userMailPreviewTableBody");
 const directoryUserDatalist = document.getElementById("directoryUserDatalist");
 const adminUserDatalist = document.getElementById("adminUserDatalist");
-const softwareVendorDatalist = document.getElementById("softwareVendorDatalist");
+const softwareLicenseDatalist = document.getElementById("softwareLicenseDatalist");
 const usersTableBody = document.getElementById("usersTableBody");
+const inactiveUsersTableBody = document.getElementById("inactiveUsersTableBody");
 const adminsTableBody = document.getElementById("adminsTableBody");
+const orgChartBoard = document.getElementById("orgChartBoard");
+const orgChartSummary = document.getElementById("orgChartSummary");
+const orgChartShowInactiveInput = document.getElementById("orgChartShowInactive");
+const orgChartToggleDeptExpandBtn = document.getElementById("orgChartToggleDeptExpandBtn");
 const ownerAssignModal = document.getElementById("ownerAssignModal");
 const ownerAssignInput = document.getElementById("ownerAssignInput");
 const addOwnerInput = document.getElementById("addOwner");
@@ -633,21 +1075,24 @@ function refreshOwnerLookupIfNeeded() {
 }
 function updateLdapPasswordStatus() {
   if (!ldapPasswordStatus) return;
-  ldapPasswordStatus.textContent = state.ldapSession.bindPassword ? "비밀번호 설정됨(세션 메모리)" : "비밀번호 미설정";
+  ldapPasswordStatus.textContent = state.ldapSession.bindPassword ? "비밀번호 입력됨(현재 브라우저 세션)" : "비밀번호 미입력";
 }
 
-function renderUsersTable(role) {
-  const tableBody = role === "admin" ? adminsTableBody : usersTableBody;
+function renderUsersTable(view = "user") {
+  const key = String(view || "user");
+  const isAdminView = key === "admin";
+  const isInactiveView = key === "user-inactive";
+
+  const tableBody = isAdminView ? adminsTableBody : isInactiveView ? inactiveUsersTableBody : usersTableBody;
   if (!tableBody) return;
 
-  const rows = role === "admin" ? state.managedAdmins : state.managedUsers;
-  if (!rows.length) {
-    const emptyColspan = role === "admin" ? 5 : 7;
-    tableBody.innerHTML = `<tr><td colspan="${emptyColspan}">등록된 ${role === "admin" ? "관리자" : "사용자"}가 없습니다.</td></tr>`;
-    return;
-  }
+  if (isAdminView) {
+    const rows = state.managedAdmins;
+    if (!rows.length) {
+      tableBody.innerHTML = '<tr><td colspan="5">등록된 관리자가 없습니다.</td></tr>';
+      return;
+    }
 
-  if (role === "admin") {
     tableBody.innerHTML = rows
       .map(
         (row) => `
@@ -665,6 +1110,12 @@ function renderUsersTable(role) {
         `,
       )
       .join("");
+    return;
+  }
+
+  const rows = (state.managedUsers || []).filter((row) => (isInactiveView ? !row.is_active : row.is_active));
+  if (!rows.length) {
+    tableBody.innerHTML = `<tr><td colspan="7">${isInactiveView ? "비활성 사용자" : "활성 사용자"}가 없습니다.</td></tr>`;
     return;
   }
 
@@ -689,6 +1140,200 @@ function renderUsersTable(role) {
     .join("");
 }
 
+function getOrgChartDepartmentName(row) {
+  const department = String(row?.department || "").trim();
+  return department || "\uBBF8\uC9C0\uC815";
+}
+
+function updateOrgChartDeptToggleButton() {
+  if (!orgChartToggleDeptExpandBtn) return;
+  orgChartToggleDeptExpandBtn.textContent = state.orgChartDeptExpanded ? "\uBD80\uC11C \uC804\uCCB4 \uC811\uAE30" : "\uBD80\uC11C \uC804\uCCB4 \uD3BC\uCE68";
+}
+
+function renderOrgChart(rows = state.managedUsers || []) {
+  if (!orgChartBoard || !orgChartSummary) return;
+
+  if (orgChartShowInactiveInput) {
+    orgChartShowInactiveInput.checked = Boolean(state.orgChartShowInactive);
+  }
+  updateOrgChartDeptToggleButton();
+
+  const sourceRows = Array.isArray(rows) ? rows.filter((row) => String(row?.username || "").trim()) : [];
+  const activeCount = sourceRows.filter((row) => Boolean(row?.is_active)).length;
+  const inactiveCount = sourceRows.length - activeCount;
+  const filteredRows = sourceRows.filter((row) => state.orgChartShowInactive || Boolean(row?.is_active));
+
+  if (!filteredRows.length) {
+    orgChartSummary.textContent = sourceRows.length
+      ? "\uBE44\uD65C\uC131 \uC0AC\uC6A9\uC790 \uC228\uAE40 \uC0C1\uD0DC\uC785\uB2C8\uB2E4. '\uBE44\uD65C\uC131 \uC0AC\uC6A9\uC790 \uD3EC\uD568'\uC744 \uCF1C\uBA74 \uD45C\uC2DC\uB429\uB2C8\uB2E4."
+      : "\uD45C\uC2DC\uD560 \uC0AC\uC6A9\uC790 \uB370\uC774\uD130\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.";
+    orgChartBoard.innerHTML = '<p class="muted">\uD45C\uC2DC\uD560 \uC0AC\uC6A9\uC790 \uB370\uC774\uD130\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.</p>';
+    return;
+  }
+
+  const normalize = (value) => String(value || "").trim().toLowerCase();
+  const nodes = [];
+  const aliasMap = new Map();
+
+  filteredRows.forEach((row, index) => {
+    const username = String(row?.username || "").trim();
+    const userDn = normalize(row?.user_dn);
+    const objectGuid = normalize(row?.object_guid);
+    const uidKey = normalize(username);
+
+    const baseKey = userDn ? `dn:${userDn}` : objectGuid ? `guid:${objectGuid}` : `uid:${uidKey || `row-${index}`}`;
+    let key = baseKey;
+    let seq = 2;
+    while (nodes.some((node) => node.key === key)) {
+      key = `${baseKey}#${seq++}`;
+    }
+
+    const node = {
+      key,
+      row,
+      managerKey: normalize(row?.manager_dn),
+      children: [],
+      parent: null,
+      hasParent: false,
+      orphan: false,
+    };
+
+    nodes.push(node);
+
+    if (userDn && !aliasMap.has(`dn:${userDn}`)) aliasMap.set(`dn:${userDn}`, node);
+    if (objectGuid && !aliasMap.has(`guid:${objectGuid}`)) aliasMap.set(`guid:${objectGuid}`, node);
+    if (uidKey && !aliasMap.has(`uid:${uidKey}`)) aliasMap.set(`uid:${uidKey}`, node);
+  });
+
+  nodes.forEach((node) => {
+    if (!node.managerKey) return;
+
+    const parent = aliasMap.get(`dn:${node.managerKey}`);
+    if (!parent || parent === node) {
+      node.orphan = true;
+      return;
+    }
+
+    parent.children.push(node);
+    node.parent = parent;
+    node.hasParent = true;
+  });
+
+  const sortNodes = (list) => {
+    list.sort((a, b) => {
+      const an = String(a?.row?.display_name || a?.row?.username || "");
+      const bn = String(b?.row?.display_name || b?.row?.username || "");
+      return an.localeCompare(bn, "ko");
+    });
+    list.forEach((node) => sortNodes(node.children));
+  };
+
+  const roots = nodes.filter((node) => !node.hasParent);
+  if (!roots.length && nodes.length) {
+    roots.push(nodes[0]);
+  }
+
+  const reachable = new Set();
+  const collectReachable = (node) => {
+    if (!node || reachable.has(node.key)) return;
+    reachable.add(node.key);
+    node.children.forEach(collectReachable);
+  };
+
+  roots.forEach(collectReachable);
+  nodes.forEach((node) => {
+    if (!reachable.has(node.key)) {
+      roots.push(node);
+      collectReachable(node);
+    }
+  });
+
+  sortNodes(roots);
+
+  const linkedCount = nodes.filter((node) => node.hasParent).length;
+  const orphanCount = nodes.filter((node) => node.orphan).length;
+  const visibleActiveCount = nodes.filter((node) => Boolean(node?.row?.is_active)).length;
+
+  orgChartSummary.textContent = `\uD45C\uC2DC ${nodes.length}\uBA85 (\uD65C\uC131 ${visibleActiveCount}\uBA85) / \uC804\uCCB4 ${sourceRows.length}\uBA85 (\uD65C\uC131 ${activeCount}\uBA85, \uBE44\uD65C\uC131 ${inactiveCount}\uBA85) / \uD2B8\uB9AC \uC5F0\uACB0 ${linkedCount}\uBA85 / \uB8E8\uD2B8 ${roots.length}\uBA85 / \uC0C1\uC704DN \uBBF8\uB9E4\uD551 ${orphanCount}\uBA85`;
+
+  const renderNode = (node, visited = new Set()) => {
+    const display = String(node?.row?.display_name || node?.row?.username || "-");
+    const username = String(node?.row?.username || "-");
+    const department = getOrgChartDepartmentName(node?.row);
+
+    if (visited.has(node.key)) {
+      return `
+        <li class="org-tree-node">
+          <article class="org-node-card cycle">
+            <div class="org-node-name">${escapeHtml(display)}</div>
+            <div class="org-node-meta">ID: ${escapeHtml(username)}</div>
+            <div class="org-node-meta">\uBD80\uC11C: ${escapeHtml(department)}</div>
+          </article>
+        </li>
+      `;
+    }
+
+    const nextVisited = new Set(visited);
+    nextVisited.add(node.key);
+
+    const childNodes = node.children.map((child) => renderNode(child, nextVisited)).filter(Boolean);
+    const childrenHtml = childNodes.length ? `<ul class="org-tree-list">${childNodes.join("")}</ul>` : "";
+
+    return `
+      <li class="org-tree-node">
+        <article class="org-node-card">
+          <div class="org-node-name">${escapeHtml(display)}</div>
+          <div class="org-node-meta">ID: ${escapeHtml(username)}</div>
+          <div class="org-node-meta">\uBD80\uC11C: ${escapeHtml(department)}</div>
+        </article>
+        ${childrenHtml}
+      </li>
+    `;
+  };
+
+  const byDeptRoots = new Map();
+  roots.forEach((root) => {
+    const department = getOrgChartDepartmentName(root.row);
+    const list = byDeptRoots.get(department) || [];
+    list.push(root);
+    byDeptRoots.set(department, list);
+  });
+
+  const departmentNames = [...byDeptRoots.keys()].sort((a, b) => a.localeCompare(b, "ko"));
+  const countSubtree = (node, seen = new Set()) => {
+    if (!node || seen.has(node.key)) return 0;
+    seen.add(node.key);
+    return 1 + node.children.reduce((acc, child) => acc + countSubtree(child, seen), 0);
+  };
+
+  const deptHtml = departmentNames
+    .map((department) => {
+      const deptRoots = byDeptRoots.get(department) || [];
+      sortNodes(deptRoots);
+      const treeRows = deptRoots.map((node) => renderNode(node)).filter(Boolean);
+      const deptCount = deptRoots.reduce((acc, root) => acc + countSubtree(root, new Set()), 0);
+      const openAttr = state.orgChartDeptExpanded ? " open" : "";
+
+      return `
+        <details class="org-dept-tree"${openAttr}>
+          <summary>${escapeHtml(department)} <span>${deptCount}\uBA85</span></summary>
+          <div class="org-dept-tree-body">
+            <ul class="org-tree-list root">
+              ${treeRows.join("")}
+            </ul>
+          </div>
+        </details>
+      `;
+    })
+    .join("");
+
+  orgChartBoard.innerHTML = `
+    <div class="org-tree-wrap">
+      ${deptHtml}
+    </div>
+  `;
+}
+
 async function loadManagedUsers(role, q = "") {
   const targetRole = role === "admin" ? "admin" : "user";
 
@@ -706,18 +1351,20 @@ async function loadManagedUsers(role, q = "") {
   }
 
   const params = new URLSearchParams();
-  params.set("limit", "1000");
+  params.set("limit", "5000");
   params.set("include_inactive", "true");
   if (q.trim()) params.set("q", q.trim());
 
   const rows = await api(`/directory-users?${params.toString()}`);
   state.managedUsers = rows;
   renderUsersTable("user");
+  renderUsersTable("user-inactive");
+  renderOrgChart(rows);
 }
 
 async function loadDirectoryUsers(q = "") {
   const params = new URLSearchParams();
-  params.set("limit", "1000");
+  params.set("limit", "5000");
   if (q.trim()) params.set("q", q.trim());
 
   state.directoryUsers = await api(`/directory-users?${params.toString()}`);
@@ -733,7 +1380,11 @@ function renderLdapScheduleInfo() {
 
   const schedule = state.ldapSchedule;
   const lastSynced = schedule.last_synced_at ? new Date(schedule.last_synced_at).toLocaleString() : "없음";
-  const runtimePassword = schedule.has_runtime_password ? "설정됨" : "미설정";
+  const runtimePassword = schedule.has_stored_password
+    ? "설정됨(서버 암호화 저장)"
+    : schedule.has_runtime_password
+      ? "설정됨(현재 서버 메모리)"
+      : "미설정";
   const lastError = schedule.last_error ? ` / 최근 오류: ${schedule.last_error}` : "";
 
   ldapScheduleInfo.textContent = `최근 동기화: ${lastSynced} / 스케줄 비밀번호: ${runtimePassword}${lastError}`;
@@ -748,6 +1399,41 @@ async function loadLdapSchedule() {
     ...(schedule || {}),
   };
 
+  const scheduleConfigKeys = [
+    "server_url",
+    "use_ssl",
+    "port",
+    "bind_dn",
+    "base_dn",
+    "user_id_attribute",
+    "user_name_attribute",
+    "user_email_attribute",
+    "user_department_attribute",
+    "user_title_attribute",
+    "manager_dn_attribute",
+    "user_dn_attribute",
+    "user_guid_attribute",
+    "size_limit",
+  ];
+  const nextConfig = { ...(state.settings.ldapConfig || DEFAULTS.ldapConfig) };
+  let configChanged = false;
+
+  scheduleConfigKeys.forEach((key) => {
+    if (!(key in state.ldapSchedule)) return;
+    const value = state.ldapSchedule[key];
+    const normalizedValue = key === "port" ? (value ?? "") : value;
+    if (nextConfig[key] !== normalizedValue) {
+      nextConfig[key] = normalizedValue;
+      configChanged = true;
+    }
+  });
+
+  if (configChanged) {
+    state.settings.ldapConfig = nextConfig;
+    persistSettings();
+    applyLdapInputs({ resetResults: false });
+  }
+
   document.getElementById("ldapScheduleEnabled").checked = Boolean(state.ldapSchedule.enabled);
   document.getElementById("ldapScheduleInterval").value = state.ldapSchedule.interval_minutes || 60;
   renderLdapScheduleInfo();
@@ -755,15 +1441,104 @@ async function loadLdapSchedule() {
 
 async function refreshUserDataSources() {
   await loadDirectoryUsers();
-  if (state.user?.role === "admin") {
+  if (isAdminUser()) {
     await Promise.all([loadManagedUsers("user"), loadManagedUsers("admin")]);
   }
 }
 
-function activateSettingsSubtab(subtabName = "general") {
-  const isAdmin = state.user?.role === "admin";
-  const requested = String(subtabName || "general");
-  const target = !isAdmin && requested !== "general" ? "general" : requested;
+const publicSettingsTabs = new Set(["hardware", "software"]);
+const adminSettingsTabs = new Set(["accounts", "misc"]);
+
+function isAdminUser() {
+  return String(state.user?.role || "").trim().toLowerCase() === "admin";
+}
+
+function activateSettingsAccountsSubtab(subtabName = "users") {
+  let target = String(subtabName || "users");
+  const allowed = new Set(["users", "users-inactive", "admins", "orgchart"]);
+
+  if (!allowed.has(target)) {
+    target = "users";
+  }
+
+  state.settingsAccountsSubtab = target;
+
+  document.querySelectorAll(".subtab-btn[data-settings-accounts-tab]").forEach((button) => {
+    const isActive = button.dataset.settingsAccountsTab === target;
+    button.classList.toggle("active", isActive);
+  });
+
+  document.querySelectorAll(".settings-accounts-subtab-section").forEach((section) => {
+    section.classList.toggle("active", section.id === `settings-accounts-subtab-${target}`);
+  });
+}
+
+function activateSettingsMailSubtab(subtabName = "smtp") {
+  const isAdmin = isAdminUser();
+  let target = String(subtabName || "smtp");
+  const allowed = new Set(["smtp", "admin", "user"]);
+
+  if (!allowed.has(target)) {
+    target = "smtp";
+  }
+
+  if (!isAdmin) {
+    target = "smtp";
+  }
+
+  state.settingsMailSubtab = target;
+
+  document.querySelectorAll(".subtab-btn[data-settings-mail-tab]").forEach((button) => {
+    const isActive = button.dataset.settingsMailTab === target;
+    button.classList.toggle("active", isActive);
+  });
+
+  document.querySelectorAll(".settings-mail-subtab-section").forEach((section) => {
+    section.classList.toggle("active", section.id === `settings-mail-subtab-${target}`);
+  });
+}
+
+function activateSettingsMiscSubtab(subtabName = "ldap") {
+  const isAdmin = isAdminUser();
+  let target = String(subtabName || "ldap");
+  const allowed = new Set(["ldap", "mail"]);
+
+  if (!allowed.has(target)) {
+    target = "ldap";
+  }
+
+  if (!isAdmin) {
+    target = "ldap";
+  }
+
+  state.settingsMiscSubtab = target;
+
+  document.querySelectorAll(".subtab-btn[data-settings-misc-tab]").forEach((button) => {
+    const isActive = button.dataset.settingsMiscTab === target;
+    button.classList.toggle("active", isActive);
+  });
+
+  document.querySelectorAll(".settings-misc-subtab-section").forEach((section) => {
+    section.classList.toggle("active", section.id === `settings-misc-subtab-${target}`);
+  });
+
+  if (target === "mail") {
+    activateSettingsMailSubtab(state.settingsMailSubtab || "smtp");
+  }
+}
+
+function activateSettingsSubtab(subtabName = "hardware") {
+  const isAdmin = isAdminUser();
+  const requested = String(subtabName || "hardware");
+  let target = requested;
+
+  if (!publicSettingsTabs.has(target) && !adminSettingsTabs.has(target)) {
+    target = "hardware";
+  }
+
+  if (!isAdmin && adminSettingsTabs.has(target)) {
+    target = "hardware";
+  }
 
   state.settingsSubtab = target;
 
@@ -775,39 +1550,62 @@ function activateSettingsSubtab(subtabName = "general") {
   document.querySelectorAll(".settings-subtab-section").forEach((section) => {
     section.classList.toggle("active", section.id === `settings-subtab-${target}`);
   });
+
+  if (target === "accounts") {
+    activateSettingsAccountsSubtab(state.settingsAccountsSubtab || "users");
+  }
+  if (target === "misc") {
+    activateSettingsMiscSubtab(state.settingsMiscSubtab || "ldap");
+  }
 }
 
-async function loadSettingsSubtabData(subtabName = "general") {
+async function loadSettingsSubtabData(subtabName = "hardware") {
   if (!state.token) return;
-  const target = String(subtabName || "general");
+  const target = String(subtabName || "hardware");
 
-  if (target === "users" && state.user?.role === "admin") {
-    await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "");
+  if (target === "software") {
+    await loadExchangeRateSetting();
     return;
   }
 
-  if (target === "admins" && state.user?.role === "admin") {
-    await loadManagedUsers("admin", document.getElementById("adminSearchQ")?.value || "");
+  if (target === "accounts") {
+    if (!isAdminUser()) return;
+    const accountSubtab = String(state.settingsAccountsSubtab || "users");
+    if (accountSubtab === "admins") {
+      await loadManagedUsers("admin", document.getElementById("adminSearchQ")?.value || "");
+    } else if (accountSubtab === "users-inactive") {
+      await loadManagedUsers("user", document.getElementById("inactiveUserSearchQ")?.value || "");
+    } else if (accountSubtab === "orgchart") {
+      await loadManagedUsers("user", document.getElementById("orgChartSearchQ")?.value || "");
+    } else {
+      await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "");
+    }
     return;
   }
 
-  if (target === "ldap" && state.user?.role === "admin") {
+  if (target === "misc") {
+    if (!isAdminUser()) return;
+    const miscSubtab = String(state.settingsMiscSubtab || "ldap");
+    if (miscSubtab === "mail") {
+      await loadMailSettingsAll();
+      return;
+    }
     await loadLdapSchedule();
   }
 }
 
 function applyRoleTabVisibility() {
-  const isAdmin = state.user?.role === "admin";
+  const isAdmin = isAdminUser();
 
   document.querySelectorAll("[data-admin-only]").forEach((el) => {
     el.classList.toggle("hidden", !isAdmin);
   });
 
-  if (!isAdmin && state.settingsSubtab !== "general") {
-    state.settingsSubtab = "general";
+  if (!isAdmin && adminSettingsTabs.has(state.settingsSubtab)) {
+    state.settingsSubtab = "hardware";
   }
 
-  activateSettingsSubtab(state.settingsSubtab || "general");
+  activateSettingsSubtab(state.settingsSubtab || "hardware");
 }
 
 function openOwnerAssignModal() {
@@ -869,6 +1667,52 @@ function closeLdapPasswordModal() {
   ldapPasswordModal.classList.add("hidden");
 }
 
+function closeUserMailPreviewModal() {
+  if (!userMailPreviewModal) return;
+  userMailPreviewModal.classList.add("hidden");
+}
+
+function renderUserMailPreviewModal(data) {
+  if (!userMailPreviewSummary || !userMailPreviewTableBody) return;
+
+  const checkedLicenses = Number(data?.checked_licenses || 0);
+  const targetUsers = Number(data?.target_users || 0);
+  const sendableUsers = Number(data?.sendable_users || 0);
+  const skippedNoEmail = Number(data?.skipped_no_email || 0);
+  const skippedInactive = Number(data?.skipped_inactive || 0);
+  const expiringCount = Number(data?.expiring_count || 0);
+  const expiredCount = Number(data?.expired_count || 0);
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+
+  userMailPreviewSummary.textContent =
+    `확인 라이선스 ${checkedLicenses}건 / 대상 ${targetUsers}명 / 발송 가능 ${sendableUsers}명` +
+    ` / 이메일 없음 ${skippedNoEmail}명 / 비활성 제외 ${skippedInactive}명` +
+    ` / 만료예정 ${expiringCount}건 / 만료 ${expiredCount}건`;
+
+  if (!rows.length) {
+    userMailPreviewTableBody.innerHTML = '<tr><td colspan="5">대상자가 없습니다.</td></tr>';
+    return;
+  }
+
+  userMailPreviewTableBody.innerHTML = rows
+    .map((row) => {
+      const expiringNames = Array.isArray(row?.expiring_license_names) ? row.expiring_license_names : [];
+      const expiredNames = Array.isArray(row?.expired_license_names) ? row.expired_license_names : [];
+      const expiringText = expiringNames.length ? expiringNames.map((name) => escapeHtml(name)).join("<br>") : "-";
+      const expiredText = expiredNames.length ? expiredNames.map((name) => escapeHtml(name)).join("<br>") : "-";
+      return `
+        <tr>
+          <td>${row?.is_active ? "활성" : "비활성"}</td>
+          <td>${escapeHtml(row?.display_name || "-")}</td>
+          <td>${escapeHtml(row?.email || "-")}</td>
+          <td>${expiringText}</td>
+          <td>${expiredText}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
 function applyLdapSessionPassword() {
   const pwd = String(ldapSessionPasswordInput?.value || "").trim();
   if (!pwd) {
@@ -882,11 +1726,18 @@ function applyLdapSessionPassword() {
 }
 
 async function api(path, options = {}) {
+  const customHeaders = { ...(options.headers || {}) };
+  const hasContentTypeHeader = Object.keys(customHeaders).some((key) => key.toLowerCase() === "content-type");
+  const isFormDataBody = typeof FormData !== "undefined" && options.body instanceof FormData;
+
   const headers = {
-    "Content-Type": "application/json",
     ...authHeaders(),
-    ...(options.headers || {}),
+    ...customHeaders,
   };
+
+  if (!isFormDataBody && !hasContentTypeHeader) {
+    headers["Content-Type"] = "application/json";
+  }
 
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) {
@@ -917,8 +1768,8 @@ function updateAuthView() {
   }
 }
 
-const hardwareTabKeys = new Set(["assets", "add", "disposed"]);
-const softwareTabKeys = new Set(["editor", "list", "info", "assignment"]);
+const hardwareTabKeys = new Set(["assets", "add", "addcsv", "disposed"]);
+const softwareTabKeys = new Set(["list", "assigned", "assignment", "editor", "import"]);
 const mainTabKeys = new Set(["dashboard", "hardware", "software", "settings"]);
 
 function setSectionActive(tabName) {
@@ -947,8 +1798,9 @@ function activateHardwareSubtab(subtabName = "assets") {
   setSectionActive(target);
 }
 
-function activateSoftwareSubtab(subtabName = "editor") {
-  const target = softwareTabKeys.has(subtabName) ? subtabName : "editor";
+function activateSoftwareSubtab(subtabName = "list") {
+  const target = softwareTabKeys.has(subtabName) ? subtabName : "list";
+  const previous = state.softwareSubtab;
 
   state.activeMainTab = "software";
   state.softwareSubtab = target;
@@ -969,6 +1821,13 @@ function activateSoftwareSubtab(subtabName = "editor") {
   document.querySelectorAll(".software-subtab-section").forEach((section) => {
     section.classList.toggle("active", section.id === `software-subtab-${target}`);
   });
+
+  if (target === "assignment" && previous !== "assignment") {
+    const assignmentSearchField = document.getElementById("softwareAssignSearchField");
+    const assignmentSearch = document.getElementById("softwareAssignSearch");
+    if (assignmentSearchField) assignmentSearchField.value = "username";
+    if (assignmentSearch) assignmentSearch.value = "";
+  }
 }
 
 function activateTab(tabName) {
@@ -991,7 +1850,7 @@ function activateTab(tabName) {
   }
 
   if (target === "software") {
-    activateSoftwareSubtab(state.softwareSubtab || "editor");
+    activateSoftwareSubtab(state.softwareSubtab || "list");
     return;
   }
 
@@ -1066,15 +1925,18 @@ function renderSummary(summary) {
   }
 
   renderSoftwareSummary(summary);
+  renderDashboardCostTrend(summary);
   requestAnimationFrame(syncDashboardCardsHeight);
 }
 
 function renderSoftwareSummary(summary = state.dashboardSummary || {}) {
   if (!softwareSummaryCards) return;
-  const softwareCount = Array.isArray(state.softwareLicensesAll) ? state.softwareLicensesAll.length : (Array.isArray(state.softwareLicenses) ? state.softwareLicenses.length : 0);
+
+  const softwareTotalQuantity = (Array.isArray(state.softwareLicensesAll) ? state.softwareLicensesAll : (Array.isArray(state.softwareLicenses) ? state.softwareLicenses : []))
+    .reduce((acc, row) => acc + Math.max(0, Number(row?.total_quantity || 0)), 0);
 
   const cards = [
-    { title: "전체 라이선스", value: summary.total_software ?? softwareCount },
+    { title: "총 보유 수량", value: summary.total_software ?? softwareTotalQuantity },
     { title: "만료 30일 내", value: summary.software_expiring_30d ?? 0 },
     { title: "만료됨", value: summary.software_expired ?? 0 },
   ];
@@ -1089,6 +1951,368 @@ function renderSoftwareSummary(summary = state.dashboardSummary || {}) {
       `,
     )
     .join("");
+}
+const dashboardCostPeriodLabels = {
+  month: "월 단위 (소프트웨어: 현재 기준 앞뒤 3개월)",
+  quarter: "분기 단위 (소프트웨어: 현재 기준 앞뒤 3분기)",
+  year: "연 단위 (소프트웨어: 현재 기준 앞뒤 3년)",
+};
+
+const dashboardCostScopeLabels = {
+  all: "전체 라이선스",
+  required: "필수 라이선스",
+  general: "일반 라이선스",
+};
+
+function toCostNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num : 0;
+}
+
+function formatCostDisplay(value) {
+  const num = toCostNumber(value);
+  return `${Math.round(num).toLocaleString("ko-KR")}원`;
+}
+
+function formatCostCompact(value) {
+  const num = toCostNumber(value);
+  if (num >= 100000000) {
+    return `${(num / 100000000).toFixed(1)}억`;
+  }
+  if (num >= 10000) {
+    return `${Math.round(num / 10000).toLocaleString("ko-KR")}만`;
+  }
+  return `${Math.round(num).toLocaleString("ko-KR")}원`;
+}
+
+function normalizeDashboardHardwareHistory(points) {
+  if (!Array.isArray(points)) return [];
+
+  return points.map((point) => ({
+    key: String(point?.key || ""),
+    label: String(point?.label || "-"),
+    period_cost: toCostNumber(point?.period_cost),
+    cumulative_cost: toCostNumber(point?.cumulative_cost),
+  }));
+}
+
+function normalizeDashboardSoftwareProjection(points) {
+  if (!Array.isArray(points)) return [];
+
+  return points.map((point) => ({
+    key: String(point?.key || ""),
+    label: String(point?.label || "-"),
+    actual_cost: toCostNumber(point?.actual_cost),
+    expected_cost: toCostNumber(point?.expected_cost),
+    total_cost: toCostNumber(point?.total_cost),
+    is_forecast: Boolean(point?.is_forecast),
+  }));
+}
+
+function buildChartTickIndexes(length) {
+  if (length <= 0) return [];
+  if (length <= 8) return Array.from({ length }, (_, index) => index);
+
+  const step = length <= 16 ? 2 : length <= 28 ? 3 : Math.ceil(length / 10);
+  const result = new Set([0, length - 1]);
+  for (let index = 0; index < length; index += step) {
+    result.add(index);
+  }
+
+  return [...result].sort((a, b) => a - b);
+}
+
+function buildLineGeometry(values, options = {}) {
+  const normalized = Array.isArray(values) ? values.map((value) => toCostNumber(value)) : [];
+  const length = normalized.length;
+  const width = Math.max(Number(options.width) || 700, Math.max(length, 1) * 82);
+  const height = Number(options.height) || 220;
+  const padLeft = Number(options.padLeft) || 42;
+  const padRight = Number(options.padRight) || 20;
+  const padTop = Number(options.padTop) || 14;
+  const padBottom = Number(options.padBottom) || 40;
+  const maxValue = Math.max(1, ...normalized);
+  const plotWidth = Math.max(1, width - padLeft - padRight);
+  const plotHeight = Math.max(1, height - padTop - padBottom);
+
+  const coords = normalized.map((value, index) => {
+    const ratio = length <= 1 ? 0.5 : index / (length - 1);
+    const x = padLeft + plotWidth * ratio;
+    const y = padTop + plotHeight - (value / maxValue) * plotHeight;
+    return { x, y, value, index };
+  });
+
+  const baselineY = padTop + plotHeight;
+  return {
+    width,
+    height,
+    padLeft,
+    padRight,
+    padTop,
+    padBottom,
+    maxValue,
+    coords,
+    baselineY,
+  };
+}
+
+function buildPathD(points) {
+  if (!Array.isArray(points) || points.length === 0) return "";
+  return points
+    .map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(" ");
+}
+
+let dashboardCostTooltipEl = null;
+
+function ensureDashboardCostTooltip() {
+  if (dashboardCostTooltipEl && document.body.contains(dashboardCostTooltipEl)) {
+    return dashboardCostTooltipEl;
+  }
+
+  const el = document.createElement("div");
+  el.className = "cost-point-tooltip hidden";
+  document.body.appendChild(el);
+  dashboardCostTooltipEl = el;
+  return el;
+}
+
+function hideDashboardCostTooltip() {
+  if (!dashboardCostTooltipEl) return;
+  dashboardCostTooltipEl.classList.add("hidden");
+}
+
+function showDashboardCostTooltip(text, clientX, clientY) {
+  const message = String(text || "").trim();
+  if (!message) {
+    hideDashboardCostTooltip();
+    return;
+  }
+
+  const el = ensureDashboardCostTooltip();
+  el.textContent = message;
+  el.classList.remove("hidden");
+
+  const tooltipWidth = el.offsetWidth || 180;
+  const tooltipHeight = el.offsetHeight || 32;
+
+  let left = Number(clientX || 0) + 14;
+  let top = Number(clientY || 0) + 14;
+
+  if (left + tooltipWidth > window.innerWidth - 8) {
+    left = Math.max(8, window.innerWidth - tooltipWidth - 8);
+  }
+  if (top + tooltipHeight > window.innerHeight - 8) {
+    top = Math.max(8, Number(clientY || 0) - tooltipHeight - 14);
+  }
+
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
+}
+
+function attachDashboardCostPointTooltips() {
+  if (!dashboardCostChart) return;
+
+  const dots = dashboardCostChart.querySelectorAll(".cost-line-dot[data-tip]");
+  if (!dots.length) {
+    hideDashboardCostTooltip();
+    return;
+  }
+
+  dots.forEach((dot) => {
+    const getTip = () => String(dot.getAttribute("data-tip") || "");
+
+    dot.addEventListener("mouseenter", (event) => {
+      showDashboardCostTooltip(getTip(), event.clientX, event.clientY);
+    });
+
+    dot.addEventListener("mousemove", (event) => {
+      showDashboardCostTooltip(getTip(), event.clientX, event.clientY);
+    });
+
+    dot.addEventListener("mouseleave", hideDashboardCostTooltip);
+
+    dot.addEventListener("focus", () => {
+      const rect = dot.getBoundingClientRect();
+      showDashboardCostTooltip(getTip(), rect.left + rect.width / 2, rect.top);
+    });
+
+    dot.addEventListener("blur", hideDashboardCostTooltip);
+  });
+}
+
+function renderHardwareCostLineChart(points) {
+  const rows = normalizeDashboardHardwareHistory(points);
+  if (!rows.length) {
+    return '<p class="cost-line-empty">하드웨어 비용 데이터가 없습니다.</p>';
+  }
+
+  const values = rows.map((row) => row.cumulative_cost);
+  const geometry = buildLineGeometry(values);
+  const pathD = buildPathD(geometry.coords);
+  const tickIndexes = buildChartTickIndexes(rows.length);
+
+  const tickLabels = tickIndexes
+    .map((index) => {
+      const point = geometry.coords[index];
+      const label = rows[index]?.label || "";
+      return `<text x="${point.x.toFixed(2)}" y="${(geometry.height - 12).toFixed(2)}" text-anchor="middle" class="cost-line-tick">${escapeHtml(label)}</text>`;
+    })
+    .join("");
+
+  const dots = geometry.coords
+    .map((point, index) => {
+      const row = rows[index];
+      const tip = `${row.label || ""} / 누적 ${formatCostDisplay(row.cumulative_cost)}`;
+      return `<circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="4.2" class="cost-line-dot hw" data-tip="${escapeHtml(tip)}" tabindex="0"></circle>`;
+    })
+    .join("");
+
+  const lastValue = rows[rows.length - 1]?.cumulative_cost || 0;
+
+  return `
+    <div class="cost-line-panel">
+      <div class="cost-line-head">
+        <h4>하드웨어 누적 비용</h4>
+        <span class="cost-line-caption">과거 ~ 현재</span>
+      </div>
+      <div class="cost-line-wrap">
+        <svg viewBox="0 0 ${geometry.width} ${geometry.height}" class="cost-line-svg" role="img" aria-label="하드웨어 누적 비용 추이">
+          <line x1="${geometry.padLeft}" y1="${geometry.baselineY.toFixed(2)}" x2="${(geometry.width - geometry.padRight).toFixed(2)}" y2="${geometry.baselineY.toFixed(2)}" class="cost-line-axis"></line>
+          <path d="${pathD}" class="cost-line-path hw"></path>
+          ${dots}
+          ${tickLabels}
+        </svg>
+      </div>
+      <p class="cost-line-summary">현재 누적 비용: ${escapeHtml(formatCostDisplay(lastValue))}</p>
+    </div>
+  `;
+}
+
+function renderSoftwareCostLineChart(points, scope = "all") {
+  const rows = normalizeDashboardSoftwareProjection(points);
+  if (!rows.length) {
+    return '<p class="cost-line-empty">소프트웨어 비용 데이터가 없습니다.</p>';
+  }
+
+  const values = rows.map((row) => row.total_cost);
+  const geometry = buildLineGeometry(values);
+  const tickIndexes = buildChartTickIndexes(rows.length);
+  const firstForecastIndex = rows.findIndex((row) => row.is_forecast);
+
+  const actualPoints = firstForecastIndex >= 0
+    ? geometry.coords.slice(0, Math.max(firstForecastIndex, 0) + 1)
+    : geometry.coords;
+
+  const forecastPoints = firstForecastIndex > 0
+    ? geometry.coords.slice(firstForecastIndex - 1)
+    : firstForecastIndex === 0
+      ? geometry.coords
+      : [];
+
+  const actualPath = buildPathD(actualPoints);
+  const forecastPath = buildPathD(forecastPoints);
+
+  const tickLabels = tickIndexes
+    .map((index) => {
+      const point = geometry.coords[index];
+      const label = rows[index]?.label || "";
+      return `<text x="${point.x.toFixed(2)}" y="${(geometry.height - 12).toFixed(2)}" text-anchor="middle" class="cost-line-tick">${escapeHtml(label)}</text>`;
+    })
+    .join("");
+
+  const dots = geometry.coords
+    .map((point, index) => {
+      const row = rows[index];
+      const modeText = row.is_forecast ? "예상" : "실제";
+      const tip = `${row.label || ""} / ${formatCostDisplay(row.total_cost)} (${modeText})`;
+      const cls = row.is_forecast ? "cost-line-dot forecast" : "cost-line-dot actual";
+      return `<circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="4.2" class="${cls}" data-tip="${escapeHtml(tip)}" tabindex="0"></circle>`;
+    })
+    .join("");
+
+  const actualTotal = rows.reduce((sum, row) => sum + row.actual_cost, 0);
+  const expectedTotal = rows.reduce((sum, row) => sum + row.expected_cost, 0);
+  const scopeLabel = dashboardCostScopeLabels[scope] || dashboardCostScopeLabels.all;
+
+  return `
+    <div class="cost-line-panel">
+      <div class="cost-line-head">
+        <h4>소프트웨어 비용 추이 (꺾은선)</h4>
+        <span class="cost-line-caption">현재 기준 앞뒤 3단위 / ${escapeHtml(scopeLabel)}</span>
+      </div>
+      <div class="cost-line-wrap">
+        <svg viewBox="0 0 ${geometry.width} ${geometry.height}" class="cost-line-svg" role="img" aria-label="소프트웨어 과거 및 예상 비용 추이">
+          <line x1="${geometry.padLeft}" y1="${geometry.baselineY.toFixed(2)}" x2="${(geometry.width - geometry.padRight).toFixed(2)}" y2="${geometry.baselineY.toFixed(2)}" class="cost-line-axis"></line>
+          <path d="${actualPath}" class="cost-line-path sw-actual"></path>
+          <path d="${forecastPath}" class="cost-line-path sw-forecast"></path>
+          ${dots}
+          ${tickLabels}
+        </svg>
+      </div>
+      <p class="cost-line-summary">과거 비용 합계: ${escapeHtml(formatCostDisplay(actualTotal))} / 예상 비용 합계: ${escapeHtml(formatCostDisplay(expectedTotal))}</p>
+    </div>
+  `;
+}
+
+function renderDashboardCostTrend(summary = state.dashboardSummary || {}) {
+  if (!dashboardCostChart || !dashboardCostLegend || !dashboardCostPeriodTabs) return;
+
+  const trends = summary.cost_trends || {};
+  const validPeriods = ["month", "quarter", "year"];
+  let period = String(state.dashboardCostPeriod || "month");
+  if (!validPeriods.includes(period)) period = "month";
+  state.dashboardCostPeriod = period;
+
+  const validScopes = ["all", "required", "general"];
+  let scope = String(state.dashboardCostScope || "all");
+  if (!validScopes.includes(scope)) scope = "all";
+  state.dashboardCostScope = scope;
+
+  dashboardCostPeriodTabs.querySelectorAll(".period-tab-btn[data-period]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.period === period);
+  });
+
+  dashboardCostScopeTabs?.querySelectorAll(".period-tab-btn[data-scope]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.scope === scope);
+  });
+
+  const periodData = trends?.[period] || {};
+  const softwareProjectionByScope = periodData.software_projection_by_scope || {};
+  const hardwareHistory = normalizeDashboardHardwareHistory(periodData.hardware_history);
+  const softwareProjection = normalizeDashboardSoftwareProjection(softwareProjectionByScope?.[scope] || periodData.software_projection);
+
+  if (!hardwareHistory.length && !softwareProjection.length) {
+    dashboardCostChart.innerHTML = '<p class="cost-line-empty">표시할 비용 데이터가 없습니다.</p>';
+    dashboardCostLegend.innerHTML = "";
+    hideDashboardCostTooltip();
+    return;
+  }
+
+  dashboardCostChart.innerHTML = `
+    <div class="cost-line-grid">
+      ${renderHardwareCostLineChart(hardwareHistory)}
+      ${renderSoftwareCostLineChart(softwareProjection, scope)}
+    </div>
+  `;
+
+  attachDashboardCostPointTooltips();
+
+  const hwCurrentCumulative = hardwareHistory.length ? hardwareHistory[hardwareHistory.length - 1].cumulative_cost : 0;
+  const swPastTotal = softwareProjection.reduce((sum, row) => sum + row.actual_cost, 0);
+  const swExpectedTotal = softwareProjection.reduce((sum, row) => sum + row.expected_cost, 0);
+  const caption = dashboardCostPeriodLabels[period] || "";
+  const scopeLabel = dashboardCostScopeLabels[scope] || dashboardCostScopeLabels.all;
+  const usdKrw = getUsdKrwRate();
+
+  dashboardCostLegend.innerHTML = `
+    <span class="cost-legend-item">${escapeHtml(caption)}</span>
+    <span class="cost-legend-item">집계 기준: ${escapeHtml(scopeLabel)}</span>
+    <span class="cost-legend-item"><span class="cost-legend-swatch hw"></span>하드웨어 누적 ${escapeHtml(formatCostDisplay(hwCurrentCumulative))}</span>
+    <span class="cost-legend-item"><span class="cost-legend-swatch sw"></span>소프트웨어 과거 ${escapeHtml(formatCostDisplay(swPastTotal))}</span>
+    <span class="cost-legend-item"><span class="cost-legend-swatch forecast"></span>소프트웨어 예상 ${escapeHtml(formatCostDisplay(swExpectedTotal))}</span>
+    <span class="cost-legend-item">환율 기준: 1$ = ${escapeHtml(Math.round(usdKrw).toLocaleString("ko-KR"))}원</span>
+  `;
 }
 
 function updateAssetsPagination() {
@@ -1146,28 +2370,41 @@ async function applyDashboardDrilldown(filter) {
 }
 
 async function applySoftwareDrilldown(mode = "") {
-  const filterExpiring = document.getElementById("softwareFilterExpiring");
-  const filterType = document.getElementById("softwareFilterType");
-  const filterVendor = document.getElementById("softwareFilterVendor");
+  const isAssignedMode = mode === "software_30d" || mode === "software_expired";
 
-  if (filterExpiring) {
-    if (mode === "software_30d") {
-      filterExpiring.value = "30";
-    } else if (mode === "software_expired") {
-      filterExpiring.value = "expired";
-    } else {
-      filterExpiring.value = "";
+  if (isAssignedMode) {
+    const assignedFilterExpiring = document.getElementById("softwareAssignedFilterExpiring");
+    const assignedFilterQ = document.getElementById("softwareAssignedFilterQ");
+    const assignedFilterField = document.getElementById("softwareAssignedFilterField");
+    const assignedFilterCategory = document.getElementById("softwareAssignedFilterCategory");
+
+    if (assignedFilterExpiring) {
+      assignedFilterExpiring.value = mode === "software_30d" ? "30" : "expired";
     }
+    if (assignedFilterQ) assignedFilterQ.value = "";
+    if (assignedFilterField) assignedFilterField.value = "all";
+    if (assignedFilterCategory) assignedFilterCategory.value = "";
+
+    activateTab("software");
+    activateSoftwareSubtab("assigned");
+    await loadSoftwareLicenses();
+    return;
   }
 
-  if (filterType) filterType.value = "";
-  if (filterVendor) filterVendor.value = "";
+  const filterField = document.getElementById("softwareFilterField");
+  const filterExpiring = document.getElementById("softwareFilterExpiring");
+  const filterCategory = document.getElementById("softwareFilterCategory");
+  const filterSubscription = document.getElementById("softwareFilterSubscription");
+
+  if (filterField) filterField.value = "all";
+  if (filterExpiring) filterExpiring.value = "";
+  if (filterCategory) filterCategory.value = "";
+  if (filterSubscription) filterSubscription.value = "";
 
   activateTab("software");
   activateSoftwareSubtab("list");
   await loadSoftwareLicenses();
 }
-
 function handleDashboardMetricClick(kind, value) {
   const v = String(value || "");
 
@@ -1326,12 +2563,112 @@ function findSoftwareLicenseById(licenseId) {
   return getSoftwareRowsForSelection().find((row) => Number(row.id) === id) || null;
 }
 
-function getSoftwareTypeOptions() {
-  const base = normalizeSoftwareMetaList(state.settings.softwareLicenseTypes, DEFAULTS.softwareLicenseTypes);
+function makeSoftwareLicenseLookupLabel(row) {
+  const id = Number(row?.id || 0);
+  const name = String(row?.product_name || `라이선스#${id || ""}`).trim();
+  const category = String(row?.license_category || "기타").trim();
+  if (!id) return name;
+  return `${id} | ${name} (${category})`;
+}
+
+function makeSoftwareAssignmentLookupLabel(row) {
+  const id = Number(row?.id || 0);
+  return String(row?.product_name || `라이선스#${id || ""}`).trim();
+}
+
+function getSoftwareAssignees(row) {
+  const direct = Array.isArray(row?.assignees)
+    ? row.assignees.map((v) => String(v || "").trim()).filter(Boolean)
+    : [];
+  if (direct.length) return [...new Set(direct)];
+
+  const fromDetails = Array.isArray(row?.assignee_details)
+    ? row.assignee_details.map((item) => String(item?.username || "").trim()).filter(Boolean)
+    : [];
+  return [...new Set(fromDetails)];
+}
+
+function getSoftwareAssigneeDetails(row) {
+  const defaultPurchaseModel = String(row?.subscription_type || "연 구독").trim() || "연 구독";
+  const defaultStartDate = String(row?.start_date || "").trim() || null;
+  const defaultEndDate = String(row?.end_date || "").trim() || null;
+
+  const normalized = Array.isArray(row?.assignee_details)
+    ? row.assignee_details
+      .map((item) => {
+        const username = String(item?.username || "").trim();
+        if (!username) return null;
+        const startDate = String(item?.start_date || "").trim();
+        const endDate = String(item?.end_date || "").trim();
+        return {
+          username,
+          start_date: startDate || null,
+          end_date: endDate || null,
+          purchase_model: String(item?.purchase_model || "").trim() || defaultPurchaseModel,
+        };
+      })
+      .filter(Boolean)
+    : [];
+
+  const detailMap = new Map();
+  normalized.forEach((item) => {
+    if (!detailMap.has(item.username)) detailMap.set(item.username, item);
+  });
+
+  return getSoftwareAssignees(row).map((username) => {
+    const current = detailMap.get(username);
+    if (current) return current;
+    return {
+      username,
+      start_date: defaultStartDate,
+      end_date: defaultEndDate,
+      purchase_model: defaultPurchaseModel,
+    };
+  });
+}
+function getSoftwareAssigneeDetailMap(row) {
+  const map = new Map();
+  getSoftwareAssigneeDetails(row).forEach((item) => {
+    map.set(item.username, { ...item });
+  });
+  return map;
+}
+
+function buildSoftwareAssigneePayload(license, assignees, detailMap) {
+  const defaultPurchaseModel = String(license?.subscription_type || "연 구독").trim() || "연 구독";
+
+  return assignees.map((username) => {
+    const current = detailMap.get(username) || {};
+    const startDate = String(current.start_date || "").trim();
+    const endDate = String(current.end_date || "").trim();
+
+    if (startDate && endDate && endDate < startDate) {
+      throw new Error("사용자별 만료일은 시작일보다 빠를 수 없습니다.");
+    }
+
+    return {
+      username,
+      start_date: startDate || null,
+      end_date: endDate || null,
+      purchase_model: String(current.purchase_model || "").trim() || defaultPurchaseModel,
+    };
+  });
+}
+function getSoftwareAssignedQuantity(row) {
+  return getSoftwareAssignees(row).length;
+}
+
+function getSoftwareUnassignedQuantity(row) {
+  const total = Math.max(1, Number(row?.total_quantity || 1));
+  return Math.max(total - getSoftwareAssignedQuantity(row), 0);
+}
+
+function getSoftwareCategoryOptions() {
+  const base = normalizeSoftwareMetaList(state.settings.softwareLicenseCategories, DEFAULTS.softwareLicenseCategories);
   const seen = new Set(base.map((value) => value.toLocaleLowerCase()));
 
   getSoftwareRowsForSelection().forEach((row) => {
-    const value = String(row.license_type || "").trim();
+    const value = String(row.license_category || "").trim();
     if (!value) return;
     const key = value.toLocaleLowerCase();
     if (seen.has(key)) return;
@@ -1342,12 +2679,12 @@ function getSoftwareTypeOptions() {
   return base;
 }
 
-function getSoftwareVendorOptions() {
-  const base = normalizeSoftwareMetaList(state.settings.softwareVendors, DEFAULTS.softwareVendors);
+function getSoftwareSubscriptionOptions() {
+  const base = [...softwareSubscriptionTypeValues];
   const seen = new Set(base.map((value) => value.toLocaleLowerCase()));
 
   getSoftwareRowsForSelection().forEach((row) => {
-    const value = String(row.vendor || "").trim();
+    const value = String(row.subscription_type || "").trim();
     if (!value) return;
     const key = value.toLocaleLowerCase();
     if (seen.has(key)) return;
@@ -1359,73 +2696,62 @@ function getSoftwareVendorOptions() {
 }
 
 function renderSoftwareMetaTables() {
-  if (softwareTypeTableBody) {
-    const rows = getSoftwareTypeOptions();
-    softwareTypeTableBody.innerHTML = rows
-      .map(
-        (value) => `
-          <tr>
-            <td>${escapeHtml(value)}</td>
-            <td>
-              <button type="button" class="mini-btn danger software-meta-remove-btn" data-kind="type" data-value="${escapeHtml(value)}">삭제</button>
-            </td>
-          </tr>
-        `,
-      )
-      .join("");
-  }
+  if (!softwareCategoryTableBody) return;
 
-  if (softwareVendorTableBody) {
-    const rows = getSoftwareVendorOptions();
-    softwareVendorTableBody.innerHTML = rows
-      .map(
-        (value) => `
-          <tr>
-            <td>${escapeHtml(value)}</td>
-            <td>
-              <button type="button" class="mini-btn danger software-meta-remove-btn" data-kind="vendor" data-value="${escapeHtml(value)}">삭제</button>
-            </td>
-          </tr>
-        `,
-      )
-      .join("");
-  }
+  const rows = getSoftwareCategoryOptions();
+  softwareCategoryTableBody.innerHTML = rows
+    .map(
+      (value) => `
+        <tr>
+          <td>${escapeHtml(value)}</td>
+          <td>
+            <button type="button" class="mini-btn danger software-meta-remove-btn" data-kind="category" data-value="${escapeHtml(value)}">삭제</button>
+          </td>
+        </tr>
+      `,
+    )
+    .join("");
 }
 
 function syncSoftwareMetaControls() {
-  state.settings.softwareLicenseTypes = normalizeSoftwareMetaList(state.settings.softwareLicenseTypes, DEFAULTS.softwareLicenseTypes);
-  state.settings.softwareVendors = normalizeSoftwareMetaList(state.settings.softwareVendors, DEFAULTS.softwareVendors);
+  state.settings.softwareLicenseCategories = normalizeSoftwareMetaList(
+    state.settings.softwareLicenseCategories,
+    DEFAULTS.softwareLicenseCategories,
+  );
 
-  const typeOptions = getSoftwareTypeOptions();
-  const vendorOptions = getSoftwareVendorOptions();
+  const categoryOptions = getSoftwareCategoryOptions();
+  const subscriptionOptions = getSoftwareSubscriptionOptions();
 
-  const swLicenseType = document.getElementById("swLicenseType");
-  if (swLicenseType) {
-    const current = swLicenseType.value || "구독";
-    swLicenseType.innerHTML = makeOptions(typeOptions, current);
-    if (![...swLicenseType.options].some((option) => option.value === current)) {
-      swLicenseType.value = typeOptions[0] || "구독";
+  const swCategory = document.getElementById("swCategory");
+  if (swCategory) {
+    const current = swCategory.value || "기타";
+    swCategory.innerHTML = makeOptions(categoryOptions, current);
+    if (![...swCategory.options].some((option) => option.value === current)) {
+      swCategory.value = categoryOptions[0] || "기타";
     }
   }
 
-  const filterType = document.getElementById("softwareFilterType");
-  if (filterType) {
-    const current = filterType.value || "";
-    filterType.innerHTML = `<option value="">전체 유형</option>${makeOptions(typeOptions, current)}`;
-    filterType.value = current;
+  const filterCategory = document.getElementById("softwareFilterCategory");
+  if (filterCategory) {
+    const current = filterCategory.value || "";
+    filterCategory.innerHTML = `<option value="">전체 구분</option>${makeOptions(categoryOptions, current)}`;
+    filterCategory.value = current;
   }
 
-  if (softwareVendorDatalist) {
-    softwareVendorDatalist.innerHTML = vendorOptions
-      .map((value) => `<option value="${escapeHtml(value)}"></option>`)
-      .join("");
+  const swSubscriptionType = document.getElementById("swSubscriptionType");
+  if (swSubscriptionType) {
+    const current = swSubscriptionType.value || "연 구독";
+    swSubscriptionType.innerHTML = makeOptions(subscriptionOptions, current);
+    if (![...swSubscriptionType.options].some((option) => option.value === current)) {
+      swSubscriptionType.value = subscriptionOptions[0] || "연 구독";
+    }
   }
 
-  const filterVendor = document.getElementById("softwareFilterVendor");
-  if (filterVendor) {
-    const current = filterVendor.value || "";
-    filterVendor.innerHTML = `<option value="">전체 공급사</option>${makeOptions(vendorOptions, current)}`;
-    filterVendor.value = current;
+  const filterSubscription = document.getElementById("softwareFilterSubscription");
+  if (filterSubscription) {
+    const current = filterSubscription.value || "";
+    filterSubscription.innerHTML = `<option value="">전체 구독 형태</option>${makeOptions(subscriptionOptions, current)}`;
+    filterSubscription.value = current;
   }
 
   renderSoftwareMetaTables();
@@ -1437,31 +2763,62 @@ function renderSoftwareEditTargetOptions(selectedId = "") {
 
   const current = String(selectedId || select.value || "");
   const options = getSoftwareRowsForSelection()
-    .map((row) => {
-      const vendor = row.vendor ? ` / ${row.vendor}` : "";
-      return `<option value="${row.id}">${escapeHtml(row.product_name || `라이선스#${row.id}`)}${escapeHtml(vendor)}</option>`;
-    })
+    .map((row) => `<option value="${row.id}">${escapeHtml(makeSoftwareLicenseLookupLabel(row))}</option>`)
     .join("");
 
   select.innerHTML = `<option value="">신규 라이선스 등록</option>${options}`;
   select.value = current;
 }
 
-function renderSoftwareAssignmentLicenseOptions(selectedId = "") {
-  const select = document.getElementById("softwareAssignLicenseSelect");
-  if (!select) return;
+function setSoftwareAssignmentLicenseById(licenseId, syncInput = true) {
+  const id = Number(licenseId || 0);
+  const hidden = document.getElementById("softwareAssignLicenseId");
+  const input = document.getElementById("softwareAssignLicenseInput");
+  if (hidden) hidden.value = id > 0 ? String(id) : "";
 
-  const current = String(selectedId || select.value || "");
-  const options = getSoftwareRowsForSelection()
-    .map((row) => `<option value="${row.id}">${escapeHtml(row.product_name || `라이선스#${row.id}`)}</option>`)
-    .join("");
+  if (!syncInput || !input) return;
+  if (!id) {
+    input.value = "";
+    return;
+  }
 
-  select.innerHTML = `<option value="">라이선스를 선택하세요</option>${options}`;
-  select.value = current;
+  const row = findSoftwareLicenseById(id);
+  input.value = row ? makeSoftwareAssignmentLookupLabel(row) : String(id);
 }
 
-function getSoftwareAssigneesFromForm() {
-  return [];
+function resolveSoftwareAssignmentLicenseIdFromInput(rawValue, preferFirstMatch = false) {
+  const text = String(rawValue || "").trim();
+  if (!text) return 0;
+
+  const byPrefix = text.match(/^(\d+)\s*\|/);
+  if (byPrefix) {
+    return Number(byPrefix[1]);
+  }
+
+  const rows = getSoftwareRowsForSelection();
+  const exact = rows.find((row) => makeSoftwareAssignmentLookupLabel(row) === text || makeSoftwareLicenseLookupLabel(row) === text);
+  if (exact) return Number(exact.id || 0);
+
+  if (!preferFirstMatch) return 0;
+
+  const q = text.toLocaleLowerCase();
+  const found = rows.find((row) => {
+    const name = String(row.product_name || "").toLocaleLowerCase();
+    const category = String(row.license_category || "").toLocaleLowerCase();
+    return name.includes(q) || category.includes(q) || makeSoftwareAssignmentLookupLabel(row).toLocaleLowerCase().includes(q) || makeSoftwareLicenseLookupLabel(row).toLocaleLowerCase().includes(q);
+  });
+  return Number(found?.id || 0);
+}
+
+function renderSoftwareAssignmentLicenseOptions(selectedId = "") {
+  if (softwareLicenseDatalist) {
+    softwareLicenseDatalist.innerHTML = getSoftwareRowsForSelection()
+      .map((row) => `<option value="${escapeHtml(makeSoftwareAssignmentLookupLabel(row))}"></option>`)
+      .join("");
+  }
+
+  const id = Number(selectedId || document.getElementById("softwareAssignLicenseId")?.value || 0);
+  setSoftwareAssignmentLicenseById(id, true);
 }
 
 function readSoftwareFormPayload() {
@@ -1472,7 +2829,7 @@ function readSoftwareFormPayload() {
 
   const totalQuantity = Number(document.getElementById("swTotalQuantity")?.value || 1);
   if (!Number.isFinite(totalQuantity) || totalQuantity < 1) {
-    throw new Error("총 라이선스 수량은 1 이상이어야 합니다.");
+    throw new Error("총 수량은 1 이상이어야 합니다.");
   }
 
   const startDate = document.getElementById("swStartDate")?.value || null;
@@ -1481,16 +2838,46 @@ function readSoftwareFormPayload() {
     throw new Error("만료일은 시작일보다 빠를 수 없습니다.");
   }
 
+  const purchaseCostRaw = document.getElementById("swPurchaseCost")?.value;
+  const purchaseCost = purchaseCostRaw === "" || purchaseCostRaw === null || purchaseCostRaw === undefined
+    ? null
+    : Number(purchaseCostRaw);
+  if (purchaseCost !== null && (!Number.isFinite(purchaseCost) || purchaseCost < 0)) {
+    throw new Error("구매 비용은 0 이상이어야 합니다.");
+  }
+
+  const currentId = Number(document.getElementById("swId")?.value || 0);
+  const assignedCount = getSoftwareAssignedQuantity(findSoftwareLicenseById(currentId));
+  if (Math.floor(totalQuantity) < assignedCount) {
+    throw new Error(`현재 할당(${assignedCount})보다 총 수량을 작게 설정할 수 없습니다.`);
+  }
+
   return {
     product_name: productName,
-    vendor: document.getElementById("swVendor")?.value.trim() || null,
-    license_type: document.getElementById("swLicenseType")?.value || "구독",
+    license_category: document.getElementById("swCategory")?.value || "기타",
+    license_scope: document.getElementById("swLicenseScope")?.value || "일반",
+    subscription_type: document.getElementById("swSubscriptionType")?.value || "연 구독",
     total_quantity: Math.floor(totalQuantity),
     start_date: startDate,
     end_date: endDate,
-    drafter: document.getElementById("swDrafter")?.value.trim() || null,
+    purchase_cost: purchaseCost,
+    purchase_currency: document.getElementById("swPurchaseCurrency")?.value || "원",
+    drafter: extractLookupUsername(document.getElementById("swDrafter")?.value || "") || null,
     notes: document.getElementById("swNotes")?.value.trim() || null,
   };
+}
+
+function updateSoftwareQuantityFields(assignedCount = null) {
+  const total = Math.max(1, Number(document.getElementById("swTotalQuantity")?.value || 1));
+  const currentId = Number(document.getElementById("swId")?.value || 0);
+  const fallbackAssigned = getSoftwareAssignedQuantity(findSoftwareLicenseById(currentId));
+  const assigned = Math.max(0, Number.isFinite(Number(assignedCount)) ? Number(assignedCount) : fallbackAssigned);
+  const unassigned = Math.max(total - assigned, 0);
+
+  const assignedInput = document.getElementById("swAssignedQuantity");
+  const unassignedInput = document.getElementById("swUnassignedQuantity");
+  if (assignedInput) assignedInput.value = String(assigned);
+  if (unassignedInput) unassignedInput.value = String(unassigned);
 }
 
 function resetSoftwareForm() {
@@ -1502,10 +2889,11 @@ function resetSoftwareForm() {
   const swEditTarget = document.getElementById("swEditTarget");
   if (swEditTarget) swEditTarget.value = "";
 
-  const typeOptions = getSoftwareTypeOptions();
-  document.getElementById("swLicenseType").innerHTML = makeOptions(typeOptions, "구독");
-  document.getElementById("swLicenseType").value = typeOptions.includes("구독") ? "구독" : typeOptions[0] || "구독";
+  syncSoftwareMetaControls();
   document.getElementById("swTotalQuantity").value = "1";
+  document.getElementById("swPurchaseCurrency").value = "원";
+  document.getElementById("swLicenseScope").value = "일반";
+  updateSoftwareQuantityFields(0);
 
   const saveBtn = document.getElementById("saveSoftwareBtn");
   if (saveBtn) saveBtn.textContent = "라이선스 저장";
@@ -1517,18 +2905,26 @@ function fillSoftwareForm(row) {
   if (swEditTarget) swEditTarget.value = String(row.id || "");
 
   document.getElementById("swProductName").value = row.product_name || "";
-  document.getElementById("swVendor").value = row.vendor || "";
 
-  const typeOptions = getSoftwareTypeOptions();
-  const typeValue = row.license_type || typeOptions[0] || "구독";
-  document.getElementById("swLicenseType").innerHTML = makeOptions(typeOptions, typeValue);
-  document.getElementById("swLicenseType").value = typeValue;
+  syncSoftwareMetaControls();
+  document.getElementById("swCategory").value = row.license_category || "기타";
+  document.getElementById("swLicenseScope").value = normalizeSoftwareLicenseScope(row.license_scope);
+  document.getElementById("swSubscriptionType").value = row.subscription_type || "연 구독";
 
   document.getElementById("swTotalQuantity").value = String(row.total_quantity || 1);
   document.getElementById("swStartDate").value = row.start_date || "";
   document.getElementById("swEndDate").value = row.end_date || "";
-  document.getElementById("swDrafter").value = row.drafter || "";
+  document.getElementById("swPurchaseCost").value = row.purchase_cost ?? "";
+  document.getElementById("swPurchaseCurrency").value = row.purchase_currency || "원";
+
+  const drafter = String(row.drafter || "").trim();
+  const drafterUser = findDirectoryUserByUsername(drafter);
+  document.getElementById("swDrafter").value = drafterUser
+    ? toLookupDisplay(drafter, drafterUser.display_name || "")
+    : drafter;
   document.getElementById("swNotes").value = row.notes || "";
+
+  updateSoftwareQuantityFields(getSoftwareAssignedQuantity(row));
 
   const saveBtn = document.getElementById("saveSoftwareBtn");
   if (saveBtn) saveBtn.textContent = "라이선스 수정 저장";
@@ -1538,7 +2934,7 @@ function renderSoftwareRows() {
   if (!softwareTableBody) return;
 
   if (!state.softwareLicenses.length) {
-    softwareTableBody.innerHTML = '<tr><td colspan="9">등록된 라이선스가 없습니다.</td></tr>';
+    softwareTableBody.innerHTML = '<tr><td colspan="13">등록된 라이선스가 없습니다.</td></tr>';
     return;
   }
 
@@ -1547,23 +2943,38 @@ function renderSoftwareRows() {
 
   softwareTableBody.innerHTML = state.softwareLicenses
     .map((row) => {
-      const assignees = Array.isArray(row.assignees) ? row.assignees : [];
-      const assigneeText = assignees.length ? assignees.map((u) => getOwnerDisplayName(u)).join(", ") : "-";
-      const totalQty = Number(row.total_quantity || 0);
+      const totalQty = Math.max(1, Number(row.total_quantity || 1));
+      const assignedQty = getSoftwareAssignedQuantity(row);
+      const unassignedQty = Math.max(totalQty - assignedQty, 0);
       const endDate = row.end_date || "";
       const expired = Boolean(endDate && endDate < todayKey);
-      const statusText = expired ? "만료" : "사용중";
+      const endDateText = `${escapeHtml(endDate || "-")} <span class="muted">(${expired ? "만료" : "사용중"})</span>`;
+      const costNumber = Number(row.purchase_cost);
+      const convertedCost = toKrwByCurrency(costNumber, row.purchase_currency);
+      const isDollar = isUsdCurrency(row.purchase_currency);
+      const costText = Number.isFinite(convertedCost) ? formatWon(convertedCost) : "-";
+      const sourceCostText = Number.isFinite(costNumber)
+        ? (isDollar ? `${costNumber.toLocaleString("en-US")} USD` : `${costNumber.toLocaleString("ko-KR")} KRW`)
+        : "-";
+      const currencyText = isDollar
+        ? `달러(환산 1$=${Math.round(getUsdKrwRate()).toLocaleString("ko-KR")}원)`
+        : "원";
+      const drafterDisplay = row.drafter ? getOwnerDisplayName(row.drafter) : "-";
 
       return `
-        <tr>
+        <tr data-license-id="${row.id}">
           <td>${escapeHtml(row.product_name || "-")}</td>
-          <td>${escapeHtml(row.vendor || "-")}</td>
-          <td>${escapeHtml(row.license_type || "-")}</td>
-          <td>${assignees.length}/${Number.isFinite(totalQty) ? totalQty : 0}</td>
+          <td>${escapeHtml(row.license_category || "기타")}</td>
+          <td>${escapeHtml(row.subscription_type || "연 구독")}</td>
+          <td>${escapeHtml(normalizeSoftwareLicenseScope(row.license_scope))}</td>
           <td>${escapeHtml(row.start_date || "-")}</td>
-          <td>${escapeHtml(endDate || "-")} <span class="muted">(${statusText})</span></td>
-          <td>${escapeHtml(row.drafter || "-")}</td>
-          <td>${escapeHtml(assigneeText)}</td>
+          <td>${endDateText}</td>
+          <td>${escapeHtml(costText)}<br><span class="muted">입력값: ${escapeHtml(sourceCostText)}</span></td>
+          <td>${escapeHtml(currencyText)}</td>
+          <td>${totalQty}</td>
+          <td>${assignedQty}</td>
+          <td>${unassignedQty}</td>
+          <td>${escapeHtml(drafterDisplay)}</td>
           <td>
             <button type="button" class="mini-btn software-edit-btn" data-id="${row.id}">수정</button>
             <button type="button" class="mini-btn danger software-delete-btn" data-id="${row.id}">삭제</button>
@@ -1574,11 +2985,264 @@ function renderSoftwareRows() {
     .join("");
 }
 
+function normalizeSearchValue(value) {
+  return String(value ?? "").trim().toLocaleLowerCase();
+}
+
+function getSoftwareLicenseSearchValues(row, field = "all") {
+  const drafterId = String(row?.drafter || "").trim();
+  const drafterName = drafterId ? getOwnerDisplayName(drafterId) : "";
+
+  const map = {
+    product_name: [row?.product_name],
+    license_category: [row?.license_category],
+    subscription_type: [row?.subscription_type],
+    license_scope: [row?.license_scope],
+    drafter: [drafterId, drafterName],
+    all: [row?.product_name, row?.license_category, row?.subscription_type, row?.license_scope, drafterId, drafterName],
+  };
+
+  return (map[field] || map.all)
+    .map((value) => normalizeSearchValue(value))
+    .filter(Boolean);
+}
+
+function matchesSoftwareLicenseSearch(row, field, queryLower) {
+  const needle = normalizeSearchValue(queryLower);
+  if (!needle) return true;
+  return getSoftwareLicenseSearchValues(row, field).some((value) => value.includes(needle));
+}
+
+function getSoftwareAssignedSearchValues(row, field = "all") {
+  const map = {
+    username: [row?.username],
+    display_name: [row?.display_name],
+    department: [row?.department],
+    license_name: [row?.license_name],
+    category: [row?.category],
+    purchase_model: [row?.purchase_model],
+    all: [row?.username, row?.display_name, row?.department, row?.license_name, row?.category, row?.purchase_model],
+  };
+
+  return (map[field] || map.all)
+    .map((value) => normalizeSearchValue(value))
+    .filter(Boolean);
+}
+
+function matchesSoftwareAssignedSearch(row, field, queryLower) {
+  const needle = normalizeSearchValue(queryLower);
+  if (!needle) return true;
+  return getSoftwareAssignedSearchValues(row, field).some((value) => value.includes(needle));
+}
+
+function compareSoftwareAssignedRows(a, b, sortKey = "expiry_key") {
+  const textCompare = (va, vb) => String(va || "").localeCompare(String(vb || ""), "ko");
+
+  if (sortKey === "expiry_key") {
+    const rank = { expired: 0, soon: 1, active: 2, unknown: 3 };
+    const ra = rank[String(a.expiry_key || "unknown")] ?? 99;
+    const rb = rank[String(b.expiry_key || "unknown")] ?? 99;
+    if (ra !== rb) return ra - rb;
+    return textCompare(a.end_date || "9999-12-31", b.end_date || "9999-12-31");
+  }
+
+  if (sortKey === "start_date" || sortKey === "end_date") {
+    const da = String(a[sortKey] || "9999-12-31");
+    const db = String(b[sortKey] || "9999-12-31");
+    if (da !== db) return da.localeCompare(db);
+    return textCompare(a.display_name, b.display_name);
+  }
+
+  const primary = textCompare(a[sortKey], b[sortKey]);
+  if (primary !== 0) return primary;
+
+  const secondary = textCompare(a.license_name, b.license_name);
+  if (secondary !== 0) return secondary;
+
+  return textCompare(a.display_name, b.display_name);
+}
+
+function sortSoftwareAssignedRows(rows) {
+  const sort = state.softwareAssignedSort || { key: "expiry_key", direction: "asc" };
+  const direction = sort.direction === "desc" ? -1 : 1;
+
+  return [...rows].sort((a, b) => compareSoftwareAssignedRows(a, b, sort.key) * direction);
+}
+
+function updateSoftwareAssignedSortButtons() {
+  const buttons = document.querySelectorAll("#softwareAssignedTable .table-sort-btn[data-sort-key]");
+  if (!buttons.length) return;
+
+  const sort = state.softwareAssignedSort || { key: "expiry_key", direction: "asc" };
+
+  buttons.forEach((button) => {
+    const key = String(button.dataset.sortKey || "");
+    const baseLabel = button.dataset.baseLabel || button.textContent.trim();
+    button.dataset.baseLabel = baseLabel;
+
+    const active = key === sort.key;
+    button.classList.toggle("sorted", active);
+    button.dataset.direction = active ? sort.direction : "";
+    button.textContent = active ? `${baseLabel} ${sort.direction === "asc" ? "▲" : "▼"}` : baseLabel;
+  });
+}
+
+function toggleSoftwareAssignedSort(sortKey) {
+  const key = String(sortKey || "").trim();
+  if (!key) return;
+
+  const current = state.softwareAssignedSort || { key: "expiry_key", direction: "asc" };
+  if (current.key === key) {
+    current.direction = current.direction === "asc" ? "desc" : "asc";
+  } else {
+    current.key = key;
+    current.direction = "asc";
+  }
+
+  state.softwareAssignedSort = current;
+}
+function getDayDiffFromToday(dateText) {
+  const text = String(dateText || "").trim();
+  if (!text) return null;
+
+  const target = new Date(`${text}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return null;
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.floor((target.getTime() - today.getTime()) / 86400000);
+}
+
+function getSoftwareAssignedOverviewRows() {
+  const licenses = getSoftwareRowsForSelection();
+  const rows = [];
+
+  licenses.forEach((license) => {
+    const details = getSoftwareAssigneeDetails(license);
+    details.forEach((detail) => {
+      const username = String(detail?.username || "").trim();
+      if (!username) return;
+
+      const user = findDirectoryUserByUsername(username);
+      const displayName = String(user?.display_name || "").trim() || username;
+      const department = String(user?.department || "").trim() || "-";
+      const licenseName = String(license?.product_name || `라이선스 #${license?.id || ""}`).trim();
+      const category = String(license?.license_category || "기타").trim() || "기타";
+      const purchaseModel = String(detail?.purchase_model || license?.subscription_type || "-").trim() || "-";
+      const startDate = String(detail?.start_date || license?.start_date || "").trim() || null;
+      const endDate = String(detail?.end_date || license?.end_date || "").trim() || null;
+      const dayDiff = getDayDiffFromToday(endDate);
+
+      let expiryKey = "unknown";
+      let expiryText = "만료일 미지정";
+
+      if (dayDiff !== null) {
+        if (dayDiff < 0) {
+          expiryKey = "expired";
+          expiryText = `만료 (${Math.abs(dayDiff)}일 경과)`;
+        } else if (dayDiff <= 30) {
+          expiryKey = "soon";
+          expiryText = `${dayDiff}일 후 만료`;
+        } else {
+          expiryKey = "active";
+          expiryText = `${dayDiff}일 남음`;
+        }
+      }
+
+      rows.push({
+        license_id: Number(license?.id || 0),
+        license_name: licenseName,
+        category,
+        username,
+        display_name: displayName,
+        department,
+        purchase_model: purchaseModel,
+        start_date: startDate,
+        end_date: endDate,
+        expiry_key: expiryKey,
+        expiry_text: expiryText,
+      });
+    });
+  });
+
+  const rank = { expired: 0, soon: 1, active: 2, unknown: 3 };
+  rows.sort((a, b) => {
+    const ra = rank[a.expiry_key] ?? 99;
+    const rb = rank[b.expiry_key] ?? 99;
+    if (ra !== rb) return ra - rb;
+
+    const ad = a.end_date || "9999-12-31";
+    const bd = b.end_date || "9999-12-31";
+    if (ad !== bd) return ad.localeCompare(bd);
+
+    if (a.license_name !== b.license_name) return a.license_name.localeCompare(b.license_name, "ko");
+    return a.display_name.localeCompare(b.display_name, "ko");
+  });
+
+  return rows;
+}
+
+function syncSoftwareAssignedFilterOptions() {
+  const categorySelect = document.getElementById("softwareAssignedFilterCategory");
+  if (!categorySelect) return;
+
+  const current = String(categorySelect.value || "").trim();
+  categorySelect.innerHTML = `<option value="">전체 구분</option>${makeOptions(getSoftwareCategoryOptions(), current)}`;
+  categorySelect.value = current;
+}
+
+function renderSoftwareAssignedRows() {
+  if (!softwareAssignedTableBody) return;
+
+  const query = String(document.getElementById("softwareAssignedFilterQ")?.value || "").trim().toLocaleLowerCase();
+  const searchField = String(document.getElementById("softwareAssignedFilterField")?.value || "all").trim();
+  const expiringFilter = String(document.getElementById("softwareAssignedFilterExpiring")?.value || "").trim();
+  const categoryFilter = String(document.getElementById("softwareAssignedFilterCategory")?.value || "").trim();
+
+  let rows = getSoftwareAssignedOverviewRows();
+
+  if (query) {
+    rows = rows.filter((row) => matchesSoftwareAssignedSearch(row, searchField, query));
+  }
+
+  if (categoryFilter) {
+    rows = rows.filter((row) => String(row.category || "") === categoryFilter);
+  }
+
+  if (expiringFilter === "30") {
+    rows = rows.filter((row) => row.expiry_key === "soon");
+  } else if (expiringFilter === "expired") {
+    rows = rows.filter((row) => row.expiry_key === "expired");
+  }
+
+  rows = sortSoftwareAssignedRows(rows);
+  updateSoftwareAssignedSortButtons();
+
+  if (!rows.length) {
+    softwareAssignedTableBody.innerHTML = '<tr><td colspan="9">조건에 맞는 할당 데이터가 없습니다.</td></tr>';
+    return;
+  }
+
+  softwareAssignedTableBody.innerHTML = rows
+    .map((row) => {
+      return `
+        <tr data-license-id="${row.license_id}">
+          <td>${escapeHtml(row.username)}</td>
+          <td>${escapeHtml(row.display_name)}</td>
+          <td>${escapeHtml(row.department)}</td>
+          <td>${escapeHtml(row.license_name)}</td>
+          <td>${escapeHtml(row.category)}</td>
+          <td>${escapeHtml(row.purchase_model)}</td>
+          <td>${escapeHtml(row.start_date || "-")}</td>
+          <td>${escapeHtml(row.end_date || "-")}</td>
+          <td><span class="software-expiry-status ${escapeHtml(row.expiry_key)}">${escapeHtml(row.expiry_text)}</span></td>
+        </tr>
+      `;
+    })
+    .join("");
+}
 function buildSoftwareQueryParams() {
   const params = new URLSearchParams();
-
-  const q = document.getElementById("softwareFilterQ")?.value.trim() || "";
-  if (q) params.set("q", q);
 
   const expiring = document.getElementById("softwareFilterExpiring")?.value || "";
   if (expiring === "30") {
@@ -1588,45 +3252,68 @@ function buildSoftwareQueryParams() {
   }
 
   params.set("skip", "0");
-  params.set("limit", "500");
+  params.set("limit", "1000");
   return params;
 }
 
 function renderSoftwareAssignmentPanel() {
   if (!softwareAssignUserTableBody) return;
 
-  const select = document.getElementById("softwareAssignLicenseSelect");
+  const input = document.getElementById("softwareAssignLicenseInput");
   const summary = document.getElementById("softwareAssignSummary");
   const query = String(document.getElementById("softwareAssignSearch")?.value || "").trim().toLocaleLowerCase();
+  const searchField = String(document.getElementById("softwareAssignSearchField")?.value || "username").trim();
 
-  const selectedId = Number(select?.value || 0);
+  const selectedId = Number(document.getElementById("softwareAssignLicenseId")?.value || 0)
+    || resolveSoftwareAssignmentLicenseIdFromInput(input?.value || "", false);
+  if (selectedId) setSoftwareAssignmentLicenseById(selectedId, true);
+
   const license = findSoftwareLicenseById(selectedId);
-
   if (!license) {
-    softwareAssignUserTableBody.innerHTML = '<tr><td colspan="5">라이선스를 선택해주세요.</td></tr>';
+    softwareAssignUserTableBody.innerHTML = '<tr><td colspan="8">라이선스를 선택해주세요.</td></tr>';
     if (summary) summary.textContent = "라이선스를 선택하면 사용자 할당 상태를 관리할 수 있습니다.";
     return;
   }
 
-  const assignees = Array.isArray(license.assignees) ? license.assignees.map((v) => String(v || "").trim()).filter(Boolean) : [];
+  const assignees = getSoftwareAssignees(license);
   const assignedSet = new Set(assignees);
+  const assigneeDetailMap = getSoftwareAssigneeDetailMap(license);
   const totalQuantity = Math.max(1, Number(license.total_quantity || 1));
+  const unassignedQuantity = Math.max(totalQuantity - assignees.length, 0);
+  const purchaseOptions = getSoftwareSubscriptionOptions();
 
   if (summary) {
-    summary.textContent = `${license.product_name || `라이선스 #${license.id}`} - 할당 ${assignees.length}/${totalQuantity}`;
+    summary.textContent = `${license.product_name || `라이선스 #${license.id}`} - 할당 ${assignees.length}/${totalQuantity} (미할당 ${unassignedQuantity})`;
   }
 
-  let users = Array.isArray(state.directoryUsers) ? state.directoryUsers : [];
+  let users = Array.isArray(state.directoryUsers) ? [...state.directoryUsers] : [];
   if (query) {
     users = users.filter((user) => {
       const username = String(user.username || "").toLocaleLowerCase();
       const displayName = String(user.display_name || "").toLocaleLowerCase();
-      return username.includes(query) || displayName.includes(query);
+      const department = String(user.department || "").toLocaleLowerCase();
+      const fieldMap = {
+        username,
+        display_name: displayName,
+        department,
+      };
+      const target = fieldMap[searchField] ?? username;
+      return target.includes(query);
     });
   }
 
+  users.sort((a, b) => {
+    const aAssigned = assignedSet.has(String(a.username || "").trim()) ? 0 : 1;
+    const bAssigned = assignedSet.has(String(b.username || "").trim()) ? 0 : 1;
+    if (aAssigned !== bAssigned) return aAssigned - bAssigned;
+
+    const aLabel = String(a.display_name || a.username || "");
+    const bLabel = String(b.display_name || b.username || "");
+    return aLabel.localeCompare(bLabel, "ko");
+  });
+
   if (!users.length) {
-    softwareAssignUserTableBody.innerHTML = '<tr><td colspan="5">검색 조건에 맞는 사용자가 없습니다.</td></tr>';
+    softwareAssignUserTableBody.innerHTML = '<tr><td colspan="8">검색 조건에 맞는 사용자가 없습니다.</td></tr>';
     return;
   }
 
@@ -1636,27 +3323,73 @@ function renderSoftwareAssignmentPanel() {
       const isAssigned = assignedSet.has(username);
       const atCapacity = assignees.length >= totalQuantity;
       const canAssign = !isAssigned && !atCapacity;
-      const action = isAssigned ? "remove" : "assign";
-      const disabled = !isAssigned && !canAssign ? "disabled" : "";
+      const defaultPurchaseModel = String(license.subscription_type || "연 구독").trim() || "연 구독";
+      const defaultStartDate = String(license.start_date || "").trim() || null;
+      const defaultEndDate = String(license.end_date || "").trim() || null;
+      const detail = assigneeDetailMap.get(username) || {
+        username,
+        start_date: defaultStartDate,
+        end_date: defaultEndDate,
+        purchase_model: defaultPurchaseModel,
+      };
+
+      const actionCell = isAssigned
+        ? `
+            <div class="software-assignment-actions">
+              <button
+                type="button"
+                class="mini-btn software-assignment-save-btn"
+                data-license-id="${license.id}"
+                data-username="${escapeHtml(username)}"
+              >
+                저장
+              </button>
+              <button
+                type="button"
+                class="mini-btn danger software-assignment-action-btn"
+                data-license-id="${license.id}"
+                data-username="${escapeHtml(username)}"
+                data-action="remove"
+              >
+                할당 해제
+              </button>
+            </div>
+          `
+        : `
+            <button
+              type="button"
+              class="mini-btn software-assignment-action-btn"
+              data-license-id="${license.id}"
+              data-username="${escapeHtml(username)}"
+              data-action="assign"
+              ${canAssign ? "" : "disabled"}
+            >
+              ${canAssign ? "할당" : "수량초과"}
+            </button>
+          `;
 
       return `
         <tr>
           <td>${escapeHtml(username || "-")}</td>
           <td>${escapeHtml(user.display_name || "-")}</td>
           <td>${escapeHtml(user.department || "-")}</td>
-          <td><span class="software-assign-status ${isAssigned ? "" : "off"}">${isAssigned ? "할당됨" : "미할당"}</span></td>
           <td>
-            <button
-              type="button"
-              class="mini-btn software-assignment-action-btn ${isAssigned ? "danger" : ""}"
-              data-license-id="${license.id}"
-              data-username="${escapeHtml(username)}"
-              data-action="${action}"
-              ${disabled}
-            >
-              ${isAssigned ? "할당 해제" : (canAssign ? "할당" : "수량초과")}
-            </button>
+            ${isAssigned
+    ? `<input type="date" class="software-assignee-date software-assignee-start" value="${escapeHtml(detail.start_date || "")}" />`
+    : '<span class="muted">-</span>'}
           </td>
+          <td>
+            ${isAssigned
+    ? `<input type="date" class="software-assignee-date software-assignee-end" value="${escapeHtml(detail.end_date || "")}" />`
+    : '<span class="muted">-</span>'}
+          </td>
+          <td>
+            ${isAssigned
+    ? `<select class="software-assignee-purchase">${makeOptions(purchaseOptions, detail.purchase_model || defaultPurchaseModel)}</select>`
+    : '<span class="muted">-</span>'}
+          </td>
+          <td><span class="software-assign-status ${isAssigned ? "" : "off"}">${isAssigned ? "할당됨" : "미할당"}</span></td>
+          <td>${actionCell}</td>
         </tr>
       `;
     })
@@ -1670,46 +3403,113 @@ async function toggleSoftwareAssignment(licenseId, username, action) {
   const userKey = String(username || "").trim();
   if (!userKey) throw new Error("사용자 정보가 올바르지 않습니다.");
 
-  const assignees = Array.isArray(license.assignees) ? license.assignees.map((v) => String(v || "").trim()).filter(Boolean) : [];
+  const assignees = getSoftwareAssignees(license);
+  const detailMap = getSoftwareAssigneeDetailMap(license);
   const totalQuantity = Math.max(1, Number(license.total_quantity || 1));
+  const defaultPurchaseModel = String(license.subscription_type || "연 구독").trim() || "연 구독";
   let next = [...assignees];
 
   if (action === "assign") {
     if (next.includes(userKey)) return;
     if (next.length >= totalQuantity) {
-      throw new Error("총 라이선스 수량을 초과하여 할당할 수 없습니다.");
+      throw new Error("총 수량을 초과하여 할당할 수 없습니다.");
     }
     next.push(userKey);
+    if (!detailMap.has(userKey)) {
+      detailMap.set(userKey, {
+        username: userKey,
+        start_date: license.start_date || null,
+        end_date: license.end_date || null,
+        purchase_model: defaultPurchaseModel,
+      });
+    }
   } else {
     next = next.filter((value) => value !== userKey);
+    detailMap.delete(userKey);
   }
+
+  const nextDetails = buildSoftwareAssigneePayload(license, next, detailMap);
 
   await api(`/software-licenses/${license.id}`, {
     method: "PUT",
-    body: JSON.stringify({ assignees: next }),
+    body: JSON.stringify({ assignees: next, assignee_details: nextDetails }),
   });
 
   await Promise.all([loadSoftwareLicenses(), loadDashboard()]);
+}
+async function saveSoftwareAssigneeDetail(licenseId, username, rowElement) {
+  const license = findSoftwareLicenseById(licenseId);
+  if (!license) throw new Error("라이선스를 찾을 수 없습니다.");
+
+  const userKey = String(username || "").trim();
+  if (!userKey) throw new Error("사용자 정보가 올바르지 않습니다.");
+
+  const assignees = getSoftwareAssignees(license);
+  if (!assignees.includes(userKey)) {
+    throw new Error("할당된 사용자만 수정할 수 있습니다.");
+  }
+
+  const startDate = rowElement?.querySelector(".software-assignee-start")?.value || null;
+  const endDate = rowElement?.querySelector(".software-assignee-end")?.value || null;
+  const purchaseModel = rowElement?.querySelector(".software-assignee-purchase")?.value || license.subscription_type || "연 구독";
+
+  if (startDate && endDate && endDate < startDate) {
+    throw new Error("사용자별 만료일은 시작일보다 빠를 수 없습니다.");
+  }
+
+  const detailMap = getSoftwareAssigneeDetailMap(license);
+  detailMap.set(userKey, {
+    username: userKey,
+    start_date: startDate,
+    end_date: endDate,
+    purchase_model: purchaseModel,
+  });
+
+  const nextDetails = buildSoftwareAssigneePayload(license, assignees, detailMap);
+
+  await api(`/software-licenses/${license.id}`, {
+    method: "PUT",
+    body: JSON.stringify({ assignees, assignee_details: nextDetails }),
+  });
+
+  await Promise.all([loadSoftwareLicenses(), loadDashboard()]);
+}
+function openSoftwareAssignmentForLicense(licenseId) {
+  const id = Number(licenseId || 0);
+  if (!id) return;
+
+  activateTab("software");
+  activateSoftwareSubtab("assignment");
+  setSoftwareAssignmentLicenseById(id, true);
+  renderSoftwareAssignmentLicenseOptions(id);
+  renderSoftwareAssignmentPanel();
 }
 
 async function loadSoftwareLicenses() {
   if (!state.token) return;
 
   const prevEditId = document.getElementById("swEditTarget")?.value || "";
-  const prevAssignId = document.getElementById("softwareAssignLicenseSelect")?.value || "";
+  const prevAssignId = Number(document.getElementById("softwareAssignLicenseId")?.value || 0)
+    || resolveSoftwareAssignmentLicenseIdFromInput(document.getElementById("softwareAssignLicenseInput")?.value || "", false);
 
   const params = buildSoftwareQueryParams();
   const rows = await api(`/software-licenses?${params.toString()}`);
   let filtered = Array.isArray(rows) ? rows : [];
 
-  const typeFilter = String(document.getElementById("softwareFilterType")?.value || "").trim();
-  if (typeFilter) {
-    filtered = filtered.filter((row) => String(row.license_type || "").trim() === typeFilter);
+  const searchField = String(document.getElementById("softwareFilterField")?.value || "all").trim();
+  const searchQuery = String(document.getElementById("softwareFilterQ")?.value || "").trim().toLocaleLowerCase();
+  if (searchQuery) {
+    filtered = filtered.filter((row) => matchesSoftwareLicenseSearch(row, searchField, searchQuery));
   }
 
-  const vendorFilter = String(document.getElementById("softwareFilterVendor")?.value || "").trim();
-  if (vendorFilter) {
-    filtered = filtered.filter((row) => String(row.vendor || "").trim() === vendorFilter);
+  const categoryFilter = String(document.getElementById("softwareFilterCategory")?.value || "").trim();
+  if (categoryFilter) {
+    filtered = filtered.filter((row) => String(row.license_category || "").trim() === categoryFilter);
+  }
+
+  const subscriptionFilter = String(document.getElementById("softwareFilterSubscription")?.value || "").trim();
+  if (subscriptionFilter) {
+    filtered = filtered.filter((row) => String(row.subscription_type || "").trim() === subscriptionFilter);
   }
 
   state.softwareLicenses = filtered;
@@ -1720,9 +3520,12 @@ async function loadSoftwareLicenses() {
   renderSoftwareRows();
   renderSoftwareSummary();
   syncSoftwareMetaControls();
+  syncSoftwareAssignedFilterOptions();
+  renderSoftwareAssignedRows();
   renderSoftwareEditTargetOptions(prevEditId);
   renderSoftwareAssignmentLicenseOptions(prevAssignId);
   renderSoftwareAssignmentPanel();
+  updateSoftwareQuantityFields();
 }
 function buildAssetQueryParams() {
   const params = new URLSearchParams();
@@ -1876,6 +3679,86 @@ async function exportAssetsCsv() {
     if (exportBtn) exportBtn.disabled = false;
   }
 }
+
+function downloadCsvFile(filename, csvText) {
+  const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function buildHardwareImportTemplateCsv() {
+  const headers = [
+    "자산명", "카테고리", "사용분류", "상태", "담당자", "사용자", "부서", "위치",
+    "제조사", "모델명", "시리얼번호", "자산코드", "구매처", "구매일", "보증만료일", "구매금액", "대여시작일", "대여만료일", "메모",
+  ];
+
+  const sample = [
+    "개발용 노트북", "노트북", "주장비", "대기", "admin", "미지정", "개발팀", "본사 3층",
+    "Lenovo", "ThinkPad X1", "SN-001", "NB-26-00001", "공식총판", "2026-03-01", "2029-03-01", "2300000", "", "", "HW 예시",
+  ];
+
+  return `\uFEFF${[headers, sample].map((row) => row.map(csvEscape).join(",")).join("\r\n")}`;
+}
+
+function buildSoftwareImportTemplateCsv() {
+  const headers = [
+    "라이선스명", "라이선스구분", "라이선스성격", "구독형태", "라이선스시작일", "라이선스만료일", "라이선스구매비용", "통화", "총수량", "공급사", "기안자", "메모",
+  ];
+
+  const sample = [
+    "Microsoft 365 E3", "생산성&협업", "필수", "연 구독", "2026-01-01", "2026-12-31", "1200000", "원", "50", "Microsoft", "admin", "SW 예시",
+  ];
+
+  return `\uFEFF${[headers, sample].map((row) => row.map(csvEscape).join(",")).join("\r\n")}`;
+}
+
+function downloadHardwareImportTemplate() {
+  downloadCsvFile("HW_업로드_양식.csv", buildHardwareImportTemplateCsv());
+}
+
+function downloadSoftwareImportTemplate() {
+  downloadCsvFile("SW_업로드_양식.csv", buildSoftwareImportTemplateCsv());
+}
+
+function formatHwSwImportResult(result) {
+  const lines = [
+    `총 데이터 행: ${result.total_rows ?? 0}`,
+    `성공: ${result.processed_rows ?? 0}건 (HW ${result.created_hardware ?? 0} / SW ${result.created_software ?? 0})`,
+    `실패: ${result.failed_rows ?? 0}건`,
+  ];
+
+  const errors = Array.isArray(result.errors) ? result.errors : [];
+  if (errors.length) {
+    lines.push("", "실패 상세:");
+    errors.slice(0, 100).forEach((item) => {
+      const kind = item.kind ? `[${item.kind}] ` : "";
+      lines.push(`- ${item.row}행 ${kind}${item.message}`);
+    });
+    if (errors.length > 100) {
+      lines.push(`- ...외 ${errors.length - 100}건`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function uploadCsvToEndpoint(file, endpoint) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return api(endpoint, {
+    method: "POST",
+    body: formData,
+  });
+}
+
 function setFieldValue(id, value) {
   document.getElementById(id).value = value ?? "";
 }
@@ -2159,7 +4042,8 @@ function readCommonForm(prefix) {
   return payload;
 }
 
-function applyLdapInputs() {
+function applyLdapInputs(options = {}) {
+  const resetResults = options.resetResults !== false;
   const config = state.settings.ldapConfig || { ...DEFAULTS.ldapConfig };
 
   const serverUrl = document.getElementById("ldapServerUrl");
@@ -2170,6 +4054,11 @@ function applyLdapInputs() {
   const userIdAttr = document.getElementById("ldapUserIdAttr");
   const userNameAttr = document.getElementById("ldapUserNameAttr");
   const userEmailAttr = document.getElementById("ldapUserEmailAttr");
+  const userDepartmentAttr = document.getElementById("ldapUserDepartmentAttr");
+  const userTitleAttr = document.getElementById("ldapUserTitleAttr");
+  const managerDnAttr = document.getElementById("ldapManagerDnAttr");
+  const userDnAttr = document.getElementById("ldapUserDnAttr");
+  const userGuidAttr = document.getElementById("ldapUserGuidAttr");
   const sizeLimit = document.getElementById("ldapSizeLimit");
 
   if (!serverUrl) return;
@@ -2182,13 +4071,20 @@ function applyLdapInputs() {
   userIdAttr.value = config.user_id_attribute || "sAMAccountName";
   userNameAttr.value = config.user_name_attribute || "displayName";
   userEmailAttr.value = config.user_email_attribute || "mail";
+  userDepartmentAttr.value = config.user_department_attribute || "department";
+  userTitleAttr.value = config.user_title_attribute || "title";
+  managerDnAttr.value = config.manager_dn_attribute || "manager";
+  userDnAttr.value = config.user_dn_attribute || "distinguishedName";
+  userGuidAttr.value = config.user_guid_attribute || "objectGUID";
   sizeLimit.value = config.size_limit || 1000;
 
-  if (ldapResultInfo) ldapResultInfo.textContent = "검색 결과가 없습니다.";
-  if (ldapResultBody) ldapResultBody.innerHTML = "";
-  state.lastLdapSearchUsers = [];
-  const importBtn = document.getElementById("ldapImportSearchResultBtn");
-  if (importBtn) importBtn.disabled = true;
+  if (resetResults) {
+    if (ldapResultInfo) ldapResultInfo.textContent = "검색 결과가 없습니다.";
+    if (ldapResultBody) ldapResultBody.innerHTML = "";
+    state.lastLdapSearchUsers = [];
+    const importBtn = document.getElementById("ldapImportSearchResultBtn");
+    if (importBtn) importBtn.disabled = true;
+  }
 
   updateLdapPasswordStatus();
   renderLdapScheduleInfo();
@@ -2205,6 +4101,11 @@ function readLdapForm(includePassword = false, requireBaseDn = true) {
     user_id_attribute: document.getElementById("ldapUserIdAttr").value.trim() || "sAMAccountName",
     user_name_attribute: document.getElementById("ldapUserNameAttr").value.trim() || "displayName",
     user_email_attribute: document.getElementById("ldapUserEmailAttr").value.trim() || "mail",
+    user_department_attribute: document.getElementById("ldapUserDepartmentAttr").value.trim() || "department",
+    user_title_attribute: document.getElementById("ldapUserTitleAttr").value.trim() || "title",
+    manager_dn_attribute: document.getElementById("ldapManagerDnAttr").value.trim() || "manager",
+    user_dn_attribute: document.getElementById("ldapUserDnAttr").value.trim() || "distinguishedName",
+    user_guid_attribute: document.getElementById("ldapUserGuidAttr").value.trim() || "objectGUID",
     size_limit: Number(document.getElementById("ldapSizeLimit").value || 1000),
   };
 
@@ -2219,6 +4120,7 @@ function readLdapForm(includePassword = false, requireBaseDn = true) {
 
   return payload;
 }
+
 function renderLdapResults(users) {
   if (!ldapResultBody || !ldapResultInfo) return;
 
@@ -2230,6 +4132,9 @@ function renderLdapResults(users) {
       email: row.email || null,
       department: row.department || null,
       title: row.title || null,
+      manager_dn: row.manager_dn || null,
+      user_dn: row.user_dn || null,
+      object_guid: row.object_guid || null,
     }))
     .filter((row) => row.username);
 
@@ -2239,7 +4144,7 @@ function renderLdapResults(users) {
   ldapResultInfo.textContent = `검색 결과: ${rows.length}건`;
 
   if (!rows.length) {
-    ldapResultBody.innerHTML = '<tr><td colspan="6">검색 결과가 없습니다.</td></tr>';
+    ldapResultBody.innerHTML = '<tr><td colspan="9">검색 결과가 없습니다.</td></tr>';
     return;
   }
 
@@ -2252,6 +4157,9 @@ function renderLdapResults(users) {
           <td>${escapeHtml(user.email || "-")}</td>
           <td>${escapeHtml(user.department || "-")}</td>
           <td>${escapeHtml(user.title || "-")}</td>
+          <td>${escapeHtml(user.manager_dn || "-")}</td>
+          <td>${escapeHtml(user.object_guid || "-")}</td>
+          <td>${escapeHtml(user.user_dn || "-")}</td>
           <td><button type="button" class="mini-btn ldap-apply-btn" data-username="${escapeHtml(user.username || "")}">사용자 적용</button></td>
         </tr>
       `,
@@ -2283,6 +4191,7 @@ function applySettingInputs() {
   setCategorySettingInputs();
   updateCodePreview();
   applyLdapInputs();
+  applySoftwareMailInputs();
   syncSoftwareMetaControls();
 }
 
@@ -2298,8 +4207,7 @@ function persistSettings() {
   localStorage.setItem(STORAGE_KEYS.defaultManager, state.settings.defaultManager);
   localStorage.setItem(STORAGE_KEYS.categories, JSON.stringify(state.settings.categories));
   localStorage.setItem(STORAGE_KEYS.ldapConfig, JSON.stringify(state.settings.ldapConfig));
-  localStorage.setItem(STORAGE_KEYS.softwareLicenseTypes, JSON.stringify(state.settings.softwareLicenseTypes));
-  localStorage.setItem(STORAGE_KEYS.softwareVendors, JSON.stringify(state.settings.softwareVendors));
+  localStorage.setItem(STORAGE_KEYS.softwareLicenseCategories, JSON.stringify(state.settings.softwareLicenseCategories));
 }
 
 function resetAddForm() {
@@ -2460,6 +4368,7 @@ async function applyInlineUpdate(assetId) {
 }
 
 async function refreshDashboardAndAssets() {
+  await loadExchangeRateSetting();
   await Promise.all([loadDashboard(), loadAssets(), loadDisposedAssets(), loadSoftwareLicenses()]);
 }
 
@@ -2483,7 +4392,7 @@ document.getElementById("loginForm").addEventListener("submit", async (event) =>
     activateTab("dashboard");
     await refreshDashboardAndAssets();
     await refreshUserDataSources();
-    if (state.user.role === "admin") {
+    if (isAdminUser()) {
       await loadLdapSchedule();
     }
     showToast("로그인되었습니다.");
@@ -2521,6 +4430,12 @@ tabs.addEventListener("click", async (event) => {
   try {
     if (!state.token) return;
 
+    if (tab === "dashboard") {
+      await loadExchangeRateSetting();
+      await loadDashboard();
+      return;
+    }
+
     if (tab === "hardware") {
       if (state.hardwareSubtab === "disposed") {
         await loadDisposedAssets();
@@ -2536,8 +4451,8 @@ tabs.addEventListener("click", async (event) => {
     }
 
     if (tab === "settings") {
-      activateSettingsSubtab(state.settingsSubtab || "general");
-      await loadSettingsSubtabData(state.settingsSubtab || "general");
+      activateSettingsSubtab(state.settingsSubtab || "hardware");
+      await loadSettingsSubtabData(state.settingsSubtab || "hardware");
     }
   } catch (error) {
     showToast(error.message);
@@ -2581,10 +4496,10 @@ settingsSubtabs?.addEventListener("click", async (event) => {
   const button = event.target.closest(".subtab-btn[data-settings-tab]");
   if (!button) return;
 
-  const subtab = button.dataset.settingsTab || "general";
-  if (button.dataset.adminOnly === "1" && state.user?.role !== "admin") {
+  const subtab = button.dataset.settingsTab || "hardware";
+  if (button.dataset.adminOnly === "1" && !isAdminUser()) {
     showToast("관리자 권한이 필요합니다.");
-    activateSettingsSubtab("general");
+    activateSettingsSubtab("hardware");
     return;
   }
 
@@ -2592,6 +4507,65 @@ settingsSubtabs?.addEventListener("click", async (event) => {
 
   try {
     await loadSettingsSubtabData(subtab);
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+settingsAccountsSubtabs?.addEventListener("click", async (event) => {
+  const button = event.target.closest(".subtab-btn[data-settings-accounts-tab]");
+  if (!button) return;
+
+  if (!isAdminUser()) {
+    showToast("관리자 권한이 필요합니다.");
+    return;
+  }
+
+  const subtab = button.dataset.settingsAccountsTab || "users";
+  activateSettingsAccountsSubtab(subtab);
+
+  try {
+    await loadSettingsSubtabData("accounts");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+settingsMiscSubtabs?.addEventListener("click", async (event) => {
+  const button = event.target.closest(".subtab-btn[data-settings-misc-tab]");
+  if (!button) return;
+
+  if (!isAdminUser()) {
+    showToast("관리자 권한이 필요합니다.");
+    activateSettingsSubtab("hardware");
+    return;
+  }
+
+  const subtab = button.dataset.settingsMiscTab || "ldap";
+  activateSettingsMiscSubtab(subtab);
+
+  try {
+    await loadSettingsSubtabData("misc");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+settingsMailSubtabs?.addEventListener("click", async (event) => {
+  const button = event.target.closest(".subtab-btn[data-settings-mail-tab]");
+  if (!button) return;
+
+  if (!isAdminUser()) {
+    showToast("관리자 권한이 필요합니다.");
+    activateSettingsSubtab("hardware");
+    return;
+  }
+
+  const subtab = button.dataset.settingsMailTab || "smtp";
+  activateSettingsMailSubtab(subtab);
+
+  try {
+    await loadSettingsSubtabData("misc");
   } catch (error) {
     showToast(error.message);
   }
@@ -2610,6 +4584,65 @@ document.getElementById("exportAssetsCsvBtn")?.addEventListener("click", async (
   await exportAssetsCsv();
 });
 
+document.getElementById("downloadHardwareCsvTemplateBtn")?.addEventListener("click", () => {
+  downloadHardwareImportTemplate();
+  showToast("하드웨어 업로드 양식을 다운로드했습니다.");
+});
+
+document.getElementById("importHardwareCsvForm")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const fileInput = document.getElementById("importHardwareCsvFile");
+  const resultBox = document.getElementById("importHardwareCsvResult");
+  const file = fileInput?.files?.[0];
+
+  if (!file) {
+    showToast("CSV 파일을 선택해주세요.");
+    return;
+  }
+
+  try {
+    if (resultBox) resultBox.textContent = "업로드 중입니다...";
+    const result = await uploadCsvToEndpoint(file, "/imports/hardware-csv");
+    if (resultBox) resultBox.textContent = formatHwSwImportResult(result);
+
+    await refreshDashboardAndAssets();
+    showToast(`HW CSV 업로드 완료: 성공 ${result.processed_rows || 0}건, 실패 ${result.failed_rows || 0}건`);
+  } catch (error) {
+    if (resultBox) resultBox.textContent = `오류: ${error.message}`;
+    showToast(error.message || "CSV 업로드에 실패했습니다.");
+  }
+});
+
+document.getElementById("downloadSoftwareCsvTemplateBtn")?.addEventListener("click", () => {
+  downloadSoftwareImportTemplate();
+  showToast("소프트웨어 업로드 양식을 다운로드했습니다.");
+});
+
+document.getElementById("importSoftwareCsvForm")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const fileInput = document.getElementById("importSoftwareCsvFile");
+  const resultBox = document.getElementById("importSoftwareCsvResult");
+  const file = fileInput?.files?.[0];
+
+  if (!file) {
+    showToast("CSV 파일을 선택해주세요.");
+    return;
+  }
+
+  try {
+    if (resultBox) resultBox.textContent = "업로드 중입니다...";
+    const result = await uploadCsvToEndpoint(file, "/imports/software-csv");
+    if (resultBox) resultBox.textContent = formatHwSwImportResult(result);
+
+    await refreshDashboardAndAssets();
+    showToast(`SW CSV 업로드 완료: 성공 ${result.processed_rows || 0}건, 실패 ${result.failed_rows || 0}건`);
+  } catch (error) {
+    if (resultBox) resultBox.textContent = `오류: ${error.message}`;
+    showToast(error.message || "CSV 업로드에 실패했습니다.");
+  }
+});
 document.getElementById("reloadDisposedBtn").addEventListener("click", async () => {
   try {
     await loadDisposedAssets();
@@ -2628,6 +4661,15 @@ document.getElementById("reloadSoftwareBtn")?.addEventListener("click", async ()
   }
 });
 
+document.getElementById("reloadSoftwareAssignedBtn")?.addEventListener("click", async () => {
+  try {
+    await loadSoftwareLicenses();
+    showToast("할당 전체 리스트 새로고침 완료");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
 document.getElementById("softwareFilterForm")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -2637,6 +4679,22 @@ document.getElementById("softwareFilterForm")?.addEventListener("submit", async 
   }
 });
 
+document.getElementById("softwareAssignedFilterForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  try {
+    renderSoftwareAssignedRows();
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+document.querySelector("#softwareAssignedTable thead")?.addEventListener("click", (event) => {
+  const button = event.target.closest(".table-sort-btn[data-sort-key]");
+  if (!button) return;
+
+  toggleSoftwareAssignedSort(button.dataset.sortKey || "");
+  renderSoftwareAssignedRows();
+});
 document.getElementById("cancelSoftwareEditBtn")?.addEventListener("click", () => {
   resetSoftwareForm();
 });
@@ -2686,75 +4744,67 @@ document.getElementById("swEditTarget")?.addEventListener("change", (event) => {
   fillSoftwareForm(row);
 });
 
-document.getElementById("softwareTypeForm")?.addEventListener("submit", (event) => {
+document.getElementById("swTotalQuantity")?.addEventListener("input", () => {
+  updateSoftwareQuantityFields();
+});
+
+document.getElementById("softwareCategoryForm")?.addEventListener("submit", (event) => {
   event.preventDefault();
-  const input = document.getElementById("softwareTypeInput");
+  const input = document.getElementById("softwareCategoryInput");
   const value = String(input?.value || "").trim();
   if (!value) return;
 
-  state.settings.softwareLicenseTypes = normalizeSoftwareMetaList(
-    [...(state.settings.softwareLicenseTypes || []), value],
-    DEFAULTS.softwareLicenseTypes,
+  state.settings.softwareLicenseCategories = normalizeSoftwareMetaList(
+    [...(state.settings.softwareLicenseCategories || []), value],
+    DEFAULTS.softwareLicenseCategories,
   );
   persistSettings();
   syncSoftwareMetaControls();
   if (input) input.value = "";
-  showToast("라이선스 유형을 저장했습니다.");
+  showToast("라이선스 구분을 저장했습니다.");
 });
 
-document.getElementById("softwareVendorForm")?.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const input = document.getElementById("softwareVendorInput");
-  const value = String(input?.value || "").trim();
-  if (!value) return;
-
-  state.settings.softwareVendors = normalizeSoftwareMetaList(
-    [...(state.settings.softwareVendors || []), value],
-    DEFAULTS.softwareVendors,
-  );
-  persistSettings();
-  syncSoftwareMetaControls();
-  if (input) input.value = "";
-  showToast("공급사 템플릿을 저장했습니다.");
-});
 
 function handleSoftwareMetaRemove(kind, value) {
   const targetValue = String(value || "").trim();
   if (!targetValue) return;
 
-  if (kind === "type") {
-    state.settings.softwareLicenseTypes = normalizeSoftwareMetaList(
-      (state.settings.softwareLicenseTypes || []).filter((item) => String(item || "").trim() !== targetValue),
-      DEFAULTS.softwareLicenseTypes,
-    );
-    persistSettings();
-    syncSoftwareMetaControls();
-    showToast("라이선스 유형을 삭제했습니다.");
-    return;
-  }
+  if (kind !== "category") return;
 
-  state.settings.softwareVendors = normalizeSoftwareMetaList(
-    (state.settings.softwareVendors || []).filter((item) => String(item || "").trim() !== targetValue),
-    DEFAULTS.softwareVendors,
+  state.settings.softwareLicenseCategories = normalizeSoftwareMetaList(
+    (state.settings.softwareLicenseCategories || []).filter((item) => String(item || "").trim() !== targetValue),
+    DEFAULTS.softwareLicenseCategories,
   );
   persistSettings();
   syncSoftwareMetaControls();
-  showToast("공급사 템플릿을 삭제했습니다.");
+  showToast("라이선스 구분을 삭제했습니다.");
 }
 
-softwareTypeTableBody?.addEventListener("click", (event) => {
+softwareCategoryTableBody?.addEventListener("click", (event) => {
   const button = event.target.closest(".software-meta-remove-btn");
   if (!button) return;
-  handleSoftwareMetaRemove(button.dataset.kind || "type", button.dataset.value || "");
+  handleSoftwareMetaRemove(button.dataset.kind || "category", button.dataset.value || "");
 });
 
-softwareVendorTableBody?.addEventListener("click", (event) => {
-  const button = event.target.closest(".software-meta-remove-btn");
-  if (!button) return;
-  handleSoftwareMetaRemove(button.dataset.kind || "vendor", button.dataset.value || "");
+
+document.getElementById("softwareAssignLicenseInput")?.addEventListener("change", (event) => {
+  const id = resolveSoftwareAssignmentLicenseIdFromInput(event.target.value, false);
+  setSoftwareAssignmentLicenseById(id, true);
+  if (!id && String(event.target.value || "").trim()) {
+    showToast("대상 라이선스를 목록에서 선택해주세요.");
+  }
+  renderSoftwareAssignmentPanel();
 });
 
-document.getElementById("softwareAssignLicenseSelect")?.addEventListener("change", () => {
+document.getElementById("softwareAssignLicenseInput")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  const id = resolveSoftwareAssignmentLicenseIdFromInput(event.target.value, true);
+  setSoftwareAssignmentLicenseById(id, true);
+  renderSoftwareAssignmentPanel();
+});
+
+document.getElementById("softwareAssignSearchField")?.addEventListener("change", () => {
   renderSoftwareAssignmentPanel();
 });
 
@@ -2763,6 +4813,21 @@ document.getElementById("softwareAssignSearch")?.addEventListener("input", () =>
 });
 
 softwareAssignUserTableBody?.addEventListener("click", async (event) => {
+  const saveButton = event.target.closest(".software-assignment-save-btn");
+  if (saveButton) {
+    const licenseId = Number(saveButton.dataset.licenseId || 0);
+    const username = saveButton.dataset.username || "";
+    const row = saveButton.closest("tr");
+
+    try {
+      await saveSoftwareAssigneeDetail(licenseId, username, row);
+      showToast("사용자별 라이선스 정보를 저장했습니다.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+
   const button = event.target.closest(".software-assignment-action-btn");
   if (!button) return;
 
@@ -2790,20 +4855,37 @@ softwareTableBody?.addEventListener("click", async (event) => {
   }
 
   const deleteBtn = event.target.closest(".software-delete-btn");
-  if (!deleteBtn) return;
+  if (deleteBtn) {
+    const id = Number(deleteBtn.dataset.id || 0);
+    if (!id) return;
 
-  const id = Number(deleteBtn.dataset.id || 0);
+    if (!confirm("이 라이선스를 삭제하시겠습니까?")) return;
+
+    try {
+      await api(`/software-licenses/${id}`, { method: "DELETE" });
+      showToast("소프트웨어 라이선스를 삭제했습니다.");
+      await Promise.all([loadSoftwareLicenses(), loadDashboard()]);
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+
+  const row = event.target.closest("tr[data-license-id]");
+  if (!row) return;
+
+  const id = Number(row.dataset.licenseId || 0);
+  if (!id) return;
+  openSoftwareAssignmentForLicense(id);
+});
+softwareAssignedTableBody?.addEventListener("click", (event) => {
+  const row = event.target.closest("tr[data-license-id]");
+  if (!row) return;
+
+  const id = Number(row.dataset.licenseId || 0);
   if (!id) return;
 
-  if (!confirm("이 라이선스를 삭제하시겠습니까?")) return;
-
-  try {
-    await api(`/software-licenses/${id}`, { method: "DELETE" });
-    showToast("소프트웨어 라이선스를 삭제했습니다.");
-    await Promise.all([loadSoftwareLicenses(), loadDashboard()]);
-  } catch (error) {
-    showToast(error.message);
-  }
+  openSoftwareAssignmentForLicense(id);
 });
 document.getElementById("openLdapPasswordModalBtn")?.addEventListener("click", () => {
   openLdapPasswordModal();
@@ -2821,6 +4903,14 @@ ldapPasswordModal?.addEventListener("click", (event) => {
   if (event.target === ldapPasswordModal) closeLdapPasswordModal();
 });
 
+document.getElementById("closeUserMailPreviewModalBtn")?.addEventListener("click", () => {
+  closeUserMailPreviewModal();
+});
+
+userMailPreviewModal?.addEventListener("click", (event) => {
+  if (event.target === userMailPreviewModal) closeUserMailPreviewModal();
+});
+
 document.getElementById("saveLdapConfigBtn").addEventListener("click", () => {
   try {
     const form = readLdapForm(false);
@@ -2834,6 +4924,11 @@ document.getElementById("saveLdapConfigBtn").addEventListener("click", () => {
       user_id_attribute: form.user_id_attribute,
       user_name_attribute: form.user_name_attribute,
       user_email_attribute: form.user_email_attribute,
+      user_department_attribute: form.user_department_attribute,
+      user_title_attribute: form.user_title_attribute,
+      manager_dn_attribute: form.manager_dn_attribute,
+      user_dn_attribute: form.user_dn_attribute,
+      user_guid_attribute: form.user_guid_attribute,
       size_limit: form.size_limit,
     };
     persistSettings();
@@ -2880,6 +4975,11 @@ document.getElementById("ldapSearchForm").addEventListener("submit", async (even
         user_id_attribute: form.user_id_attribute,
         user_name_attribute: form.user_name_attribute,
         user_email_attribute: form.user_email_attribute,
+        user_department_attribute: form.user_department_attribute,
+        user_title_attribute: form.user_title_attribute,
+        manager_dn_attribute: form.manager_dn_attribute,
+        user_dn_attribute: form.user_dn_attribute,
+        user_guid_attribute: form.user_guid_attribute,
         size_limit: form.size_limit,
       }),
     });
@@ -2894,6 +4994,11 @@ document.getElementById("ldapSearchForm").addEventListener("submit", async (even
       user_id_attribute: form.user_id_attribute,
       user_name_attribute: form.user_name_attribute,
       user_email_attribute: form.user_email_attribute,
+      user_department_attribute: form.user_department_attribute,
+      user_title_attribute: form.user_title_attribute,
+      manager_dn_attribute: form.manager_dn_attribute,
+      user_dn_attribute: form.user_dn_attribute,
+      user_guid_attribute: form.user_guid_attribute,
       size_limit: form.size_limit,
     };
     persistSettings();
@@ -2904,7 +5009,7 @@ document.getElementById("ldapSearchForm").addEventListener("submit", async (even
 
 document.getElementById("ldapSyncNowBtn")?.addEventListener("click", async () => {
   try {
-    if (state.user?.role !== "admin") {
+    if (!isAdminUser()) {
       throw new Error("관리자 권한이 필요합니다.");
     }
 
@@ -2923,6 +5028,11 @@ document.getElementById("ldapSyncNowBtn")?.addEventListener("click", async () =>
         user_id_attribute: form.user_id_attribute,
         user_name_attribute: form.user_name_attribute,
         user_email_attribute: form.user_email_attribute,
+        user_department_attribute: form.user_department_attribute,
+        user_title_attribute: form.user_title_attribute,
+        manager_dn_attribute: form.manager_dn_attribute,
+        user_dn_attribute: form.user_dn_attribute,
+        user_guid_attribute: form.user_guid_attribute,
         size_limit: form.size_limit,
         save_for_schedule: saveForSchedule,
       }),
@@ -2940,7 +5050,7 @@ document.getElementById("ldapScheduleForm")?.addEventListener("submit", async (e
   event.preventDefault();
 
   try {
-    if (state.user?.role !== "admin") {
+    if (!isAdminUser()) {
       throw new Error("관리자 권한이 필요합니다.");
     }
 
@@ -2959,6 +5069,11 @@ document.getElementById("ldapScheduleForm")?.addEventListener("submit", async (e
       user_id_attribute: form.user_id_attribute,
       user_name_attribute: form.user_name_attribute,
       user_email_attribute: form.user_email_attribute,
+      user_department_attribute: form.user_department_attribute,
+      user_title_attribute: form.user_title_attribute,
+      manager_dn_attribute: form.manager_dn_attribute,
+      user_dn_attribute: form.user_dn_attribute,
+      user_guid_attribute: form.user_guid_attribute,
       size_limit: form.size_limit,
       bind_password: state.ldapSession.bindPassword || null,
     };
@@ -2980,7 +5095,7 @@ document.getElementById("ldapScheduleForm")?.addEventListener("submit", async (e
 });
 document.getElementById("ldapImportSearchResultBtn")?.addEventListener("click", async () => {
   try {
-    if (state.user?.role !== "admin") {
+    if (!isAdminUser()) {
       throw new Error("관리자 권한이 필요합니다.");
     }
 
@@ -3008,13 +5123,25 @@ ldapResultBody?.addEventListener("click", (event) => {
 
 
 const reloadUsersBtn = document.getElementById("reloadUsersBtn");
+const reloadInactiveUsersBtn = document.getElementById("reloadInactiveUsersBtn");
 const reloadAdminsBtn = document.getElementById("reloadAdminsBtn");
+const reloadOrgChartBtn = document.getElementById("reloadOrgChartBtn");
 
 reloadUsersBtn?.addEventListener("click", async () => {
   try {
     await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "");
     await loadDirectoryUsers();
     showToast("사용자 목록을 새로고침했습니다.");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+reloadInactiveUsersBtn?.addEventListener("click", async () => {
+  try {
+    await loadManagedUsers("user", document.getElementById("inactiveUserSearchQ")?.value || "");
+    await loadDirectoryUsers();
+    showToast("비활성 사용자 목록을 새로고침했습니다.");
   } catch (error) {
     showToast(error.message);
   }
@@ -3029,6 +5156,28 @@ reloadAdminsBtn?.addEventListener("click", async () => {
   }
 });
 
+
+
+reloadOrgChartBtn?.addEventListener("click", async () => {
+  try {
+    await loadManagedUsers("user", document.getElementById("orgChartSearchQ")?.value || "");
+    showToast("\uC870\uC9C1\uB3C4\uB97C \uC0C8\uB85C\uACE0\uCE68\uD588\uC2B5\uB2C8\uB2E4.");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+orgChartShowInactiveInput?.addEventListener("change", () => {
+  state.orgChartShowInactive = Boolean(orgChartShowInactiveInput.checked);
+  renderOrgChart(state.managedUsers || []);
+});
+
+orgChartToggleDeptExpandBtn?.addEventListener("click", () => {
+  state.orgChartDeptExpanded = !state.orgChartDeptExpanded;
+  updateOrgChartDeptToggleButton();
+  renderOrgChart(state.managedUsers || []);
+});
+
 document.getElementById("userFilterForm")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -3038,10 +5187,28 @@ document.getElementById("userFilterForm")?.addEventListener("submit", async (eve
   }
 });
 
+document.getElementById("inactiveUserFilterForm")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await loadManagedUsers("user", document.getElementById("inactiveUserSearchQ")?.value || "");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
 document.getElementById("adminFilterForm")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     await loadManagedUsers("admin", document.getElementById("adminSearchQ")?.value || "");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+document.getElementById("orgChartFilterForm")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await loadManagedUsers("user", document.getElementById("orgChartSearchQ")?.value || "");
   } catch (error) {
     showToast(error.message);
   }
@@ -3093,7 +5260,7 @@ document.getElementById("adminCreateForm")?.addEventListener("submit", async (ev
   }
 });
 
-[usersTableBody, adminsTableBody].forEach((tableBody) => {
+[usersTableBody, inactiveUsersTableBody, adminsTableBody].forEach((tableBody) => {
   tableBody?.addEventListener("click", async (event) => {
     const toggleBtn = event.target.closest(".user-toggle-btn");
     if (!toggleBtn) return;
@@ -3115,7 +5282,18 @@ document.getElementById("adminCreateForm")?.addEventListener("submit", async (ev
         });
       }
 
-      await loadManagedUsers(role, "");
+      if (role === "admin") {
+        await loadManagedUsers("admin", document.getElementById("adminSearchQ")?.value || "");
+      } else {
+        const subtab = String(state.settingsAccountsSubtab || "users");
+        let query = document.getElementById("userSearchQ")?.value || "";
+        if (subtab === "users-inactive") {
+          query = document.getElementById("inactiveUserSearchQ")?.value || "";
+        } else if (subtab === "orgchart") {
+          query = document.getElementById("orgChartSearchQ")?.value || "";
+        }
+        await loadManagedUsers("user", query);
+      }
       if (role === "user") {
         await loadDirectoryUsers();
       }
@@ -3140,6 +5318,31 @@ document.getElementById("adminCreateForm")?.addEventListener("submit", async (ev
       showToast(error.message);
     }
   });
+});
+
+dashboardCostPeriodTabs?.addEventListener("click", (event) => {
+  const button = event.target.closest(".period-tab-btn[data-period]");
+  if (!button) return;
+
+  const period = String(button.dataset.period || "month");
+  if (!["month", "quarter", "year"].includes(period)) return;
+
+  state.dashboardCostPeriod = period;
+  renderDashboardCostTrend();
+  requestAnimationFrame(syncDashboardCardsHeight);
+});
+
+
+dashboardCostScopeTabs?.addEventListener("click", (event) => {
+  const button = event.target.closest(".period-tab-btn[data-scope]");
+  if (!button) return;
+
+  const scope = String(button.dataset.scope || "all");
+  if (!["all", "required", "general"].includes(scope)) return;
+
+  state.dashboardCostScope = scope;
+  renderDashboardCostTrend();
+  requestAnimationFrame(syncDashboardCardsHeight);
 });
 
 document.getElementById("addUsageType").addEventListener("change", (event) => {
@@ -3239,12 +5442,177 @@ document.getElementById("editGenerateAssetCodeBtn").addEventListener("click", as
   }
 });
 
+document.getElementById("saveExchangeRateBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) {
+      throw new Error("환율 변경은 관리자만 가능합니다.");
+    }
+
+    const rateInput = document.getElementById("settingUsdKrwRate");
+    const dateInput = document.getElementById("settingExchangeRateDate");
+    const usdKrw = Number(rateInput?.value || "");
+    const effectiveDate = String(dateInput?.value || "").trim() || TODAY_ISO;
+
+    if (!Number.isFinite(usdKrw) || usdKrw <= 0) {
+      throw new Error("환율은 0보다 큰 숫자로 입력해주세요.");
+    }
+
+    const saved = await api("/settings/exchange-rate", {
+      method: "PUT",
+      body: JSON.stringify({
+        usd_krw: usdKrw,
+        effective_date: effectiveDate,
+      }),
+    });
+
+    state.settings.exchangeRate = normalizeExchangeRateSetting(saved);
+    applyExchangeRateInputs();
+    await Promise.all([loadDashboard(), loadSoftwareLicenses()]);
+    showToast("오늘 환율을 저장했습니다.");
+  } catch (error) {
+    showToast(error.message || "환율 저장에 실패했습니다.");
+  }
+});
+
+
+document.getElementById("saveSmtpConfigBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) {
+      throw new Error("SMTP 설정 변경은 관리자만 가능합니다.");
+    }
+
+    const payload = readMailSmtpForm();
+    const saved = await api("/settings/mail/smtp", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+
+    state.settings.mailSmtp = normalizeMailSmtpSetting(saved);
+    applyMailSmtpInputs();
+    showToast("SMTP 설정을 저장했습니다.");
+  } catch (error) {
+    showToast(error.message || "SMTP 설정 저장에 실패했습니다.");
+  }
+});
+
+
+document.getElementById("saveAdminMailBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) {
+      throw new Error("관리자 메일 설정 변경은 관리자만 가능합니다.");
+    }
+
+    const payload = readAdminMailForm();
+    const saved = await api("/settings/mail/admin", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+
+    state.settings.mailAdmin = normalizeMailAdminSetting(saved);
+    applyMailAdminInputs();
+    showToast("관리자 메일 설정을 저장했습니다.");
+  } catch (error) {
+    showToast(error.message || "관리자 메일 설정 저장에 실패했습니다.");
+  }
+});
+
+
+document.getElementById("saveUserMailBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) {
+      throw new Error("사용자 메일 설정 변경은 관리자만 가능합니다.");
+    }
+
+    const payload = readUserMailForm();
+    const saved = await api("/settings/mail/user", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+
+    state.settings.mailUser = normalizeMailUserSetting(saved);
+    applyMailUserInputs();
+    showToast("사용자 메일 설정을 저장했습니다.");
+  } catch (error) {
+    showToast(error.message || "사용자 메일 설정 저장에 실패했습니다.");
+  }
+});
+
+
+document.getElementById("previewUserMailTargetsBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) {
+      throw new Error("대상자 미리보기는 관리자만 가능합니다.");
+    }
+
+    const payload = readUserMailForm();
+    if (userMailPreviewSummary) {
+      userMailPreviewSummary.textContent = "대상자 정보를 불러오는 중입니다.";
+    }
+    if (userMailPreviewTableBody) {
+      userMailPreviewTableBody.innerHTML = '<tr><td colspan="5">불러오는 중...</td></tr>';
+    }
+    userMailPreviewModal?.classList.remove("hidden");
+
+    const preview = await api("/settings/mail/user/preview-targets", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    renderUserMailPreviewModal(preview);
+  } catch (error) {
+    closeUserMailPreviewModal();
+    showToast(error.message || "대상자 미리보기를 불러오지 못했습니다.");
+  }
+});
+
+document.getElementById("sendAdminMailNowBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) {
+      throw new Error("즉시 발송은 관리자만 가능합니다.");
+    }
+
+    const password = String(document.getElementById("smtpPassword")?.value || "").trim() || null;
+    const result = await api("/settings/mail/admin/send-now", {
+      method: "POST",
+      body: JSON.stringify({ smtp_password: password }),
+    });
+
+    await loadMailAdminSetting();
+    await loadMailSmtpSetting();
+    showToast(result?.message || "관리자 메일을 발송했습니다.");
+  } catch (error) {
+    showToast(error.message || "관리자 메일 발송에 실패했습니다.");
+  }
+});
+
+
+document.getElementById("sendUserMailNowBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) {
+      throw new Error("즉시 발송은 관리자만 가능합니다.");
+    }
+
+    const password = String(document.getElementById("smtpPassword")?.value || "").trim() || null;
+    const result = await api("/settings/mail/user/send-now", {
+      method: "POST",
+      body: JSON.stringify({ smtp_password: password }),
+    });
+
+    await loadMailUserSetting();
+    await loadMailSmtpSetting();
+    showToast(result?.message || "사용자 메일을 발송했습니다.");
+  } catch (error) {
+    showToast(error.message || "사용자 메일 발송에 실패했습니다.");
+  }
+});
+
 document.getElementById("saveCodeSettingBtn").addEventListener("click", () => {
   const template = document.getElementById("settingAssetCodeTemplate").value.trim() || DEFAULTS.codeTemplate;
   state.settings.codeTemplate = template;
   persistSettings();
   updateCodePreview();
   applyLdapInputs();
+  applySoftwareMailInputs();
   syncSoftwareMetaControls();
   showToast("자산코드 양식을 저장했습니다.");
 });
@@ -3254,6 +5622,7 @@ document.getElementById("previewCodeSettingBtn").addEventListener("click", () =>
   state.settings.codeTemplate = template;
   updateCodePreview();
   applyLdapInputs();
+  applySoftwareMailInputs();
   syncSoftwareMetaControls();
 });
 
@@ -3299,6 +5668,7 @@ document.getElementById("addCategorySettingBtn").addEventListener("click", () =>
   setCategorySettingInputs();
   updateCodePreview();
   applyLdapInputs();
+  applySoftwareMailInputs();
   syncSoftwareMetaControls();
 });
 
@@ -3337,6 +5707,7 @@ document.getElementById("settingCategoryTableBody").addEventListener("click", (e
   setCategorySettingInputs();
   updateCodePreview();
   applyLdapInputs();
+  applySoftwareMailInputs();
   syncSoftwareMetaControls();
   showToast("카테고리를 삭제했습니다.");
 });
@@ -3457,7 +5828,7 @@ async function initialize() {
     activateTab("dashboard");
     await refreshDashboardAndAssets();
     await refreshUserDataSources();
-    if (state.user.role === "admin") {
+    if (isAdminUser()) {
       await loadLdapSchedule();
     }
   } catch {
@@ -3470,6 +5841,126 @@ async function initialize() {
 }
 
 initialize();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

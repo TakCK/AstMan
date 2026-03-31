@@ -80,6 +80,9 @@ class DirectoryUserResponse(BaseModel):
     email: str | None = None
     department: str | None = None
     title: str | None = None
+    manager_dn: str | None = None
+    user_dn: str | None = None
+    object_guid: str | None = None
     is_active: bool
     source: str
     synced_at: datetime
@@ -94,6 +97,9 @@ class DirectoryUserCreate(BaseModel):
     email: str | None = Field(default=None, max_length=200)
     department: str | None = Field(default=None, max_length=120)
     title: str | None = Field(default=None, max_length=120)
+    manager_dn: str | None = Field(default=None, max_length=500)
+    user_dn: str | None = Field(default=None, max_length=500)
+    object_guid: str | None = Field(default=None, max_length=80)
 
 
 class DirectoryUserUpdate(BaseModel):
@@ -101,6 +107,9 @@ class DirectoryUserUpdate(BaseModel):
     email: str | None = Field(default=None, max_length=200)
     department: str | None = Field(default=None, max_length=120)
     title: str | None = Field(default=None, max_length=120)
+    manager_dn: str | None = Field(default=None, max_length=500)
+    user_dn: str | None = Field(default=None, max_length=500)
+    object_guid: str | None = Field(default=None, max_length=80)
     is_active: bool | None = None
 
 
@@ -110,6 +119,9 @@ class DirectoryUserImportItem(BaseModel):
     email: str | None = Field(default=None, max_length=200)
     department: str | None = Field(default=None, max_length=120)
     title: str | None = Field(default=None, max_length=120)
+    manager_dn: str | None = Field(default=None, max_length=500)
+    user_dn: str | None = Field(default=None, max_length=500)
+    object_guid: str | None = Field(default=None, max_length=80)
 
 
 class DirectoryUserBulkImportRequest(BaseModel):
@@ -133,6 +145,11 @@ class LdapSyncScheduleRequest(BaseModel):
     user_id_attribute: str = Field(default="sAMAccountName", min_length=1, max_length=80)
     user_name_attribute: str = Field(default="displayName", min_length=1, max_length=80)
     user_email_attribute: str = Field(default="mail", min_length=1, max_length=80)
+    user_department_attribute: str = Field(default="department", min_length=1, max_length=80)
+    user_title_attribute: str = Field(default="title", min_length=1, max_length=80)
+    manager_dn_attribute: str = Field(default="manager", min_length=1, max_length=80)
+    user_dn_attribute: str = Field(default="distinguishedName", min_length=1, max_length=80)
+    user_guid_attribute: str = Field(default="objectGUID", min_length=1, max_length=80)
     size_limit: int = Field(default=1000, ge=50, le=5000)
     bind_password: str | None = Field(default=None, min_length=1, max_length=255)
 
@@ -148,8 +165,14 @@ class LdapSyncScheduleResponse(BaseModel):
     user_id_attribute: str
     user_name_attribute: str
     user_email_attribute: str
+    user_department_attribute: str
+    user_title_attribute: str
+    manager_dn_attribute: str
+    user_dn_attribute: str
+    user_guid_attribute: str
     size_limit: int
     has_runtime_password: bool
+    has_stored_password: bool
     last_synced_at: datetime | None = None
     last_error: str | None = None
     last_result: dict[str, int] | None = None
@@ -165,6 +188,11 @@ class LdapSyncNowRequest(BaseModel):
     user_id_attribute: str = Field(default="sAMAccountName", min_length=1, max_length=80)
     user_name_attribute: str = Field(default="displayName", min_length=1, max_length=80)
     user_email_attribute: str = Field(default="mail", min_length=1, max_length=80)
+    user_department_attribute: str = Field(default="department", min_length=1, max_length=80)
+    user_title_attribute: str = Field(default="title", min_length=1, max_length=80)
+    manager_dn_attribute: str = Field(default="manager", min_length=1, max_length=80)
+    user_dn_attribute: str = Field(default="distinguishedName", min_length=1, max_length=80)
+    user_guid_attribute: str = Field(default="objectGUID", min_length=1, max_length=80)
     size_limit: int = Field(default=1000, ge=50, le=5000)
     save_for_schedule: bool = False
 
@@ -247,14 +275,26 @@ class AssetStatusChangeRequest(BaseModel):
     memo: str | None = Field(default=None, max_length=500)
 
 
+class SoftwareLicenseAssigneeDetail(BaseModel):
+    username: str = Field(min_length=1, max_length=120)
+    start_date: date | None = None
+    end_date: date | None = None
+    purchase_model: str | None = Field(default=None, min_length=1, max_length=30)
+
+
 class SoftwareLicenseBase(BaseModel):
     product_name: str = Field(min_length=1, max_length=200)
     vendor: str | None = Field(default=None, max_length=120)
-    license_type: str = Field(default="구독", min_length=1, max_length=30)
+    license_category: str = Field(default="기타", min_length=1, max_length=40)
+    license_scope: str = Field(default="일반", min_length=1, max_length=20)
+    subscription_type: str = Field(default="연 구독", min_length=1, max_length=30)
     total_quantity: int = Field(default=1, ge=1, le=100000)
-    assignees: list[str] = Field(default_factory=list)
+    assignees: list[str] | None = Field(default_factory=list)
+    assignee_details: list[SoftwareLicenseAssigneeDetail] | None = Field(default_factory=list)
     start_date: date | None = None
     end_date: date | None = None
+    purchase_cost: float | None = Field(default=None, ge=0)
+    purchase_currency: str = Field(default="원", min_length=1, max_length=10)
     drafter: str | None = Field(default=None, max_length=120)
     notes: str | None = None
 
@@ -266,11 +306,16 @@ class SoftwareLicenseCreate(SoftwareLicenseBase):
 class SoftwareLicenseUpdate(BaseModel):
     product_name: str | None = Field(default=None, min_length=1, max_length=200)
     vendor: str | None = Field(default=None, max_length=120)
-    license_type: str | None = Field(default=None, min_length=1, max_length=30)
+    license_category: str | None = Field(default=None, min_length=1, max_length=40)
+    license_scope: str | None = Field(default=None, min_length=1, max_length=20)
+    subscription_type: str | None = Field(default=None, min_length=1, max_length=30)
     total_quantity: int | None = Field(default=None, ge=1, le=100000)
     assignees: list[str] | None = None
+    assignee_details: list[SoftwareLicenseAssigneeDetail] | None = None
     start_date: date | None = None
     end_date: date | None = None
+    purchase_cost: float | None = Field(default=None, ge=0)
+    purchase_currency: str | None = Field(default=None, min_length=1, max_length=10)
     drafter: str | None = Field(default=None, max_length=120)
     notes: str | None = None
 
@@ -281,6 +326,55 @@ class SoftwareLicenseResponse(SoftwareLicenseBase):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+
+class CsvImportRowError(BaseModel):
+    row: int
+    kind: str | None = None
+    message: str
+
+
+class CsvHwSwImportResponse(BaseModel):
+    ok: bool = True
+    total_rows: int
+    processed_rows: int
+    created_hardware: int
+    created_software: int
+    failed_rows: int
+    errors: list[CsvImportRowError] = Field(default_factory=list)
+class DashboardHardwareHistoryPoint(BaseModel):
+    key: str
+    label: str
+    period_cost: float
+    cumulative_cost: float
+
+
+class DashboardSoftwareProjectionPoint(BaseModel):
+    key: str
+    label: str
+    actual_cost: float
+    expected_cost: float
+    total_cost: float
+    is_forecast: bool
+
+
+class DashboardSoftwareProjectionByScope(BaseModel):
+    all: list[DashboardSoftwareProjectionPoint]
+    required: list[DashboardSoftwareProjectionPoint]
+    general: list[DashboardSoftwareProjectionPoint]
+
+
+class DashboardCostTrendPeriod(BaseModel):
+    hardware_history: list[DashboardHardwareHistoryPoint]
+    software_projection: list[DashboardSoftwareProjectionPoint]
+    software_projection_by_scope: DashboardSoftwareProjectionByScope
+
+
+class DashboardCostTrendSet(BaseModel):
+    month: DashboardCostTrendPeriod
+    quarter: DashboardCostTrendPeriod
+    year: DashboardCostTrendPeriod
 
 
 class DashboardSummaryResponse(BaseModel):
@@ -295,6 +389,172 @@ class DashboardSummaryResponse(BaseModel):
     status_counts: dict[str, int]
     usage_type_counts: dict[str, int]
     category_counts: dict[str, int]
+    cost_trends: DashboardCostTrendSet
+
+
+class ExchangeRateSettingResponse(BaseModel):
+    usd_krw: float = Field(ge=0.0001)
+    effective_date: date
+
+
+class ExchangeRateSettingUpdate(BaseModel):
+    usd_krw: float = Field(ge=0.0001)
+    effective_date: date | None = None
+
+
+class MailSmtpConfigUpdate(BaseModel):
+    smtp_host: str = Field(default="", max_length=255)
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    use_tls: bool = True
+    use_ssl: bool = False
+    smtp_username: str | None = Field(default=None, max_length=255)
+    smtp_password: str | None = Field(default=None, min_length=1, max_length=255)
+    from_email: str | None = Field(default=None, max_length=255)
+
+
+class MailSmtpConfigResponse(BaseModel):
+    smtp_host: str
+    smtp_port: int
+    use_tls: bool
+    use_ssl: bool
+    smtp_username: str
+    from_email: str
+    has_runtime_password: bool
+    has_stored_password: bool
+
+
+class MailAdminConfigUpdate(BaseModel):
+    enabled: bool = False
+    to_emails: list[str] = Field(default_factory=list)
+    notify_days: int = Field(default=30, ge=1, le=365)
+    schedule_hour: int = Field(default=9, ge=0, le=23)
+    schedule_minute: int = Field(default=0, ge=0, le=59)
+    include_expired: bool = True
+    subject_template: str | None = Field(default=None, max_length=300)
+    body_template: str | None = Field(default=None, max_length=20000)
+
+
+class MailAdminConfigResponse(BaseModel):
+    enabled: bool
+    to_emails: list[str]
+    notify_days: int
+    schedule_hour: int
+    schedule_minute: int
+    include_expired: bool
+    subject_template: str
+    body_template: str
+    last_sent_at: datetime | None = None
+    last_error: str | None = None
+    last_result: dict[str, int] | None = None
+
+
+class MailUserConfigUpdate(BaseModel):
+    enabled: bool = False
+    notify_days: int = Field(default=30, ge=1, le=365)
+    schedule_hour: int = Field(default=9, ge=0, le=23)
+    schedule_minute: int = Field(default=0, ge=0, le=59)
+    include_expired: bool = True
+    only_active_users: bool = True
+    subject_template: str | None = Field(default=None, max_length=300)
+    body_template: str | None = Field(default=None, max_length=20000)
+
+
+class MailUserConfigResponse(BaseModel):
+    enabled: bool
+    notify_days: int
+    schedule_hour: int
+    schedule_minute: int
+    include_expired: bool
+    only_active_users: bool
+    subject_template: str
+    body_template: str
+    last_sent_at: datetime | None = None
+    last_error: str | None = None
+    last_result: dict[str, int] | None = None
+
+
+class MailSendNowRequest(BaseModel):
+    smtp_password: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class MailSendNowResponse(BaseModel):
+    ok: bool
+    message: str
+    result: dict[str, int]
+
+
+
+class MailUserPreviewItem(BaseModel):
+    username: str
+    display_name: str
+    email: str | None = None
+    is_active: bool
+    expiring_count: int
+    expired_count: int
+    expiring_license_names: list[str] = Field(default_factory=list)
+    expired_license_names: list[str] = Field(default_factory=list)
+    status: str
+    sendable: bool
+
+
+class MailUserPreviewResponse(BaseModel):
+    checked_licenses: int
+    target_users: int
+    sendable_users: int
+    skipped_no_email: int
+    skipped_inactive: int
+    expiring_count: int
+    expired_count: int
+    rows: list[MailUserPreviewItem] = Field(default_factory=list)
+
+class SoftwareExpiryMailConfigUpdate(BaseModel):
+    enabled: bool = False
+    smtp_host: str = Field(default="", max_length=255)
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    use_tls: bool = True
+    use_ssl: bool = False
+    smtp_username: str | None = Field(default=None, max_length=255)
+    smtp_password: str | None = Field(default=None, min_length=1, max_length=255)
+    from_email: str | None = Field(default=None, max_length=255)
+    to_emails: list[str] = Field(default_factory=list)
+    notify_days: int = Field(default=30, ge=1, le=365)
+    schedule_hour: int = Field(default=9, ge=0, le=23)
+    schedule_minute: int = Field(default=0, ge=0, le=59)
+    include_expired: bool = True
+    subject_template: str | None = Field(default=None, max_length=300)
+    body_template: str | None = Field(default=None, max_length=20000)
+
+
+class SoftwareExpiryMailConfigResponse(BaseModel):
+    enabled: bool
+    smtp_host: str
+    smtp_port: int
+    use_tls: bool
+    use_ssl: bool
+    smtp_username: str
+    from_email: str
+    to_emails: list[str]
+    notify_days: int
+    schedule_hour: int
+    schedule_minute: int
+    include_expired: bool
+    subject_template: str
+    body_template: str
+    has_runtime_password: bool
+    has_stored_password: bool
+    last_sent_at: datetime | None = None
+    last_error: str | None = None
+    last_result: dict[str, int] | None = None
+
+
+class SoftwareExpiryMailSendNowRequest(BaseModel):
+    smtp_password: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class SoftwareExpiryMailSendNowResponse(BaseModel):
+    ok: bool
+    message: str
+    result: dict[str, int]
 
 
 class LdapTestRequest(BaseModel):
@@ -311,6 +571,11 @@ class LdapSearchRequest(LdapTestRequest):
     user_id_attribute: str = Field(default="sAMAccountName", min_length=1, max_length=80)
     user_name_attribute: str = Field(default="displayName", min_length=1, max_length=80)
     user_email_attribute: str = Field(default="mail", min_length=1, max_length=80)
+    user_department_attribute: str = Field(default="department", min_length=1, max_length=80)
+    user_title_attribute: str = Field(default="title", min_length=1, max_length=80)
+    manager_dn_attribute: str = Field(default="manager", min_length=1, max_length=80)
+    user_dn_attribute: str = Field(default="distinguishedName", min_length=1, max_length=80)
+    user_guid_attribute: str = Field(default="objectGUID", min_length=1, max_length=80)
     size_limit: int = Field(default=1000, ge=50, le=5000)
 
 
@@ -321,6 +586,9 @@ class LdapUserResponse(BaseModel):
     email: str | None = None
     department: str | None = None
     title: str | None = None
+    manager_dn: str | None = None
+    user_dn: str | None = None
+    object_guid: str | None = None
 
 
 class LdapSearchResponse(BaseModel):
@@ -337,6 +605,24 @@ class AssetHistoryResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

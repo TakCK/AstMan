@@ -98,5 +98,7 @@ docker compose up -d --build
 
 ## 운영 전 권장 사항
 - `SECRET_KEY`를 충분히 긴 랜덤 문자열로 변경
+- `LDAP_BIND_PASSWORD_KEY` 별도 설정 권장 (LDAP Bind 비밀번호 암호화 저장 키)
 - `ADMIN_PASSWORD` 즉시 변경
 - DB 계정/비밀번호(`POSTGRES_*`) 운영 환경 기준으로 변경
+
