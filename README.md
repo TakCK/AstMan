@@ -42,6 +42,13 @@ docker compose up -d --build
 - Web: [http://localhost:8000/](http://localhost:8000/)
 - API Docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 
+
+## 6-1) 개발 구조(Phase 1)
+- `app/main.py`: 앱 생성, 라우터 등록, startup/shutdown 오케스트레이션
+- `app/routers/*`: 엔드포인트 계층 (권한/요청/응답)
+- `app/services/*`: 도메인 비즈니스 로직
+- `app/jobs/*`: 백그라운드 스케줄러 실행/중지/루프
+- `app/crud.py`: DB 접근/조작
 ## 7) 환경 변수 안내
 `.env.example` 기준으로 최소 아래 항목을 확인하세요.
 
@@ -67,3 +74,5 @@ docker compose up -d --build
 
 ## 11) Author
 - Created by TakCK
+
+

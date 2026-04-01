@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from .. import legacy_main as legacy, models, schemas, security
+from .. import crud, models, schemas, security
 from ..database import get_db
 from ..services import report_service
 
@@ -14,7 +14,7 @@ router = APIRouter()
 
 @router.get("/health", summary="헬스 체크", tags=["대시보드"])
 def health_check():
-    return legacy.health_check()
+    return {"status": "ok"}
 
 
 @router.get("/dashboard/summary", response_model=schemas.DashboardSummaryResponse, summary="자산 현황 요약", tags=["대시보드"])
@@ -22,7 +22,7 @@ def dashboard_summary(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    return legacy.dashboard_summary(db, _)
+    return crud.get_dashboard_summary(db)
 
 
 @router.get(
@@ -108,6 +108,7 @@ def download_general_license_report(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
 
 @router.get("/dashboard/reports/general-licenses.csv", summary="일반 라이선스/구독 현황 CSV 다운로드", tags=["대시보드"])
 def download_general_license_report_csv(

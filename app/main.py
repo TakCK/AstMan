@@ -4,12 +4,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm import Session
 
 from . import crud, security
-from .services import ldap_service, mail_service, schema_upgrade_service
 from .database import Base, SessionLocal, engine
-from .jobs import ldap_sync_job
+from .jobs import ldap_sync_job, software_mail_job
 from .routers import assets, auth, branding, dashboard, ldap, software, users
+from .services import ldap_service, mail_service, schema_upgrade_service
 
 app = FastAPI(
     title="IT 자산관리 시스템",
@@ -41,41 +42,59 @@ app.include_router(ldap.router)
 app.include_router(branding.router)
 
 
-@app.on_event("startup")
-def on_startup():
-    Base.metadata.create_all(bind=engine)
-    schema_upgrade_service.run_schema_upgrade(engine)
-
+def initialize_default_admin(db: Session) -> None:
     admin_username = os.getenv("ADMIN_USERNAME", "admin")
     admin_password = os.getenv("ADMIN_PASSWORD", "ChangeMe123!")
 
+    existing_admin = crud.get_user_by_username(db, admin_username)
+    if existing_admin is not None:
+        return
+
+    crud.create_user(
+        db=db,
+        username=admin_username,
+        password_hash=security.hash_password(admin_password),
+        role="admin",
+    )
+
+
+def restore_runtime_secrets(db: Session) -> None:
+    ldap_service._ensure_runtime_bind_password(db)
+    mail_service.ensure_runtime_software_mail_password(db)
+
+
+def _bootstrap_application_state() -> None:
     db = SessionLocal()
     try:
-        existing_admin = crud.get_user_by_username(db, admin_username)
-        if existing_admin is None:
-            crud.create_user(
-                db=db,
-                username=admin_username,
-                password_hash=security.hash_password(admin_password),
-                role="admin",
-            )
-
-        ldap_service._ensure_runtime_bind_password(db)
-        mail_service.ensure_runtime_software_mail_password(db)
+        initialize_default_admin(db)
+        restore_runtime_secrets(db)
     finally:
         db.close()
 
+
+def _start_background_jobs() -> None:
     ldap_sync_job._start_ldap_scheduler()
-    mail_service.start_software_mail_scheduler()
+    software_mail_job._start_software_mail_scheduler()
+
+
+def _stop_background_jobs() -> None:
+    ldap_sync_job._stop_ldap_scheduler()
+    software_mail_job._stop_software_mail_scheduler()
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    Base.metadata.create_all(bind=engine)
+    schema_upgrade_service.run_schema_upgrade(engine)
+    _bootstrap_application_state()
+    _start_background_jobs()
 
 
 @app.on_event("shutdown")
-def on_shutdown():
-    ldap_sync_job._stop_ldap_scheduler()
-    mail_service.stop_software_mail_scheduler()
+def on_shutdown() -> None:
+    _stop_background_jobs()
 
 
 @app.get("/", include_in_schema=False)
 def web_index():
     return FileResponse(STATIC_DIR / "index.html")
-

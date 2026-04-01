@@ -1,9 +1,9 @@
 ﻿from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from .. import crud, legacy_main as legacy, models, schemas, security
-from ..services import csv_import_service, mail_service
+from .. import crud, models, schemas, security
 from ..database import get_db
+from ..services import csv_import_service, mail_service
 
 router = APIRouter()
 
@@ -37,7 +37,7 @@ def get_exchange_rate_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    return legacy.get_exchange_rate_setting(db, _)
+    return crud.get_exchange_rate_setting(db)
 
 
 @router.put("/settings/exchange-rate", response_model=schemas.ExchangeRateSettingResponse, summary="USD->KRW 환율 저장", tags=["설정"])
@@ -46,7 +46,7 @@ def set_exchange_rate_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.set_exchange_rate_setting(payload, db, _)
+    return crud.set_exchange_rate_setting(db, payload.usd_krw, payload.effective_date)
 
 
 @router.get("/settings/mail/smtp", response_model=schemas.MailSmtpConfigResponse, summary="메일 SMTP 설정 조회", tags=["설정"])
@@ -168,7 +168,10 @@ def create_software_license(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    return legacy.create_software_license(payload, db, _)
+    try:
+        return crud.create_software_license(db, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/software-licenses", response_model=list[schemas.SoftwareLicenseResponse], summary="소프트웨어 라이선스 목록", tags=["소프트웨어"])
@@ -182,7 +185,15 @@ def list_software_licenses(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    rows = legacy.list_software_licenses(skip, limit, q, expiring_days, expired_only, db, _)
+    safe_limit = max(1, min(limit, 5000))
+    rows = crud.list_software_licenses(
+        db,
+        skip=max(0, skip),
+        limit=safe_limit,
+        q=q,
+        expiring_days=expiring_days,
+        expired_only=expired_only,
+    )
 
     scope_raw = str(license_scope or "").strip()
     if scope_raw and scope_raw.lower() not in {"all", "전체"}:
@@ -222,7 +233,10 @@ def get_software_license(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    return legacy.get_software_license(license_id, db, _)
+    db_row = crud.get_software_license(db, license_id)
+    if not db_row:
+        raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
+    return db_row
 
 
 @router.put("/software-licenses/{license_id}", response_model=schemas.SoftwareLicenseResponse, summary="소프트웨어 라이선스 수정", tags=["소프트웨어"])
@@ -232,7 +246,17 @@ def update_software_license(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    return legacy.update_software_license(license_id, payload, db, _)
+    db_row = crud.get_software_license(db, license_id)
+    if not db_row:
+        raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
+
+    if payload.model_dump(exclude_unset=True) == {}:
+        raise HTTPException(status_code=400, detail="수정할 항목이 없습니다")
+
+    try:
+        return crud.update_software_license(db, db_row, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/software-licenses/{license_id}", status_code=204, summary="소프트웨어 라이선스 삭제", tags=["소프트웨어"])
@@ -241,4 +265,8 @@ def delete_software_license(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    return legacy.delete_software_license(license_id, db, _)
+    db_row = crud.get_software_license(db, license_id)
+    if not db_row:
+        raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
+
+    crud.delete_software_license(db, db_row)
