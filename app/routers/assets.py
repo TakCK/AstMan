@@ -19,6 +19,41 @@ def _value_error_message(err: ValueError) -> str:
     return "요청 값을 확인해주세요"
 
 
+def _to_asset_response(asset: models.Asset) -> schemas.AssetResponse:
+    owner = (getattr(asset, "owner", None) or "").strip() or "미지정"
+    manager_raw = (getattr(asset, "manager", None) or "").strip()
+    location_raw = (getattr(asset, "location", None) or "").strip()
+    name_raw = (getattr(asset, "name", None) or "").strip()
+    category_raw = (getattr(asset, "category", None) or "").strip()
+
+    payload = {
+        "id": asset.id,
+        "name": name_raw or "미지정",
+        "category": category_raw or "기타",
+        "usage_type": crud.normalize_usage_type(getattr(asset, "usage_type", None)),
+        "manufacturer": getattr(asset, "manufacturer", None),
+        "model_name": getattr(asset, "model_name", None),
+        "owner": owner,
+        "manager": manager_raw or owner,
+        "department": getattr(asset, "department", None),
+        "location": location_raw or "미지정",
+        "status": crud.normalize_status(getattr(asset, "status", None)),
+        "serial_number": getattr(asset, "serial_number", None),
+        "asset_code": getattr(asset, "asset_code", None),
+        "vendor": getattr(asset, "vendor", None),
+        "purchase_date": getattr(asset, "purchase_date", None),
+        "purchase_cost": getattr(asset, "purchase_cost", None),
+        "warranty_expiry": getattr(asset, "warranty_expiry", None),
+        "rental_start_date": getattr(asset, "rental_start_date", None),
+        "rental_end_date": getattr(asset, "rental_end_date", None),
+        "notes": getattr(asset, "notes", None),
+        "created_at": asset.created_at,
+        "updated_at": asset.updated_at,
+        "disposed_at": getattr(asset, "disposed_at", None),
+    }
+    return schemas.AssetResponse.model_validate(payload)
+
+
 @router.post("/imports/hw-sw-csv", response_model=schemas.CsvHwSwImportResponse, summary="HW/SW CSV 통합 업로드", tags=["자산"])
 async def import_hw_sw_csv(
     file: UploadFile = File(...),
@@ -44,7 +79,7 @@ def create_asset(
     current_user: models.User = Depends(security.get_current_user),
 ):
     try:
-        return crud.create_asset(db, asset, actor=current_user)
+        return _to_asset_response(crud.create_asset(db, asset, actor=current_user))
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="자산코드 또는 시리얼번호가 이미 존재합니다")
@@ -69,7 +104,7 @@ def list_assets(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    return crud.list_assets(
+    assets = crud.list_assets(
         db,
         skip=skip,
         limit=limit,
@@ -83,6 +118,7 @@ def list_assets(
         warranty_overdue=warranty_overdue,
         rental_expiring_days=rental_expiring_days,
     )
+    return [_to_asset_response(asset) for asset in assets]
 
 
 @router.post("/assets/labels/preview", response_model=schemas.AssetLabelPreviewResponse, summary="자산 스티커 미리보기 데이터(다중)", tags=["자산"])
@@ -112,7 +148,7 @@ def get_asset(
     db_asset = crud.get_asset(db, asset_id)
     if not db_asset:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
-    return db_asset
+    return _to_asset_response(db_asset)
 
 
 @router.get("/assets/{asset_id}/history", response_model=list[schemas.AssetHistoryResponse], summary="자산 이력 조회", tags=["자산"])
@@ -143,7 +179,7 @@ def update_asset(
         raise HTTPException(status_code=400, detail="수정할 항목이 없습니다")
 
     try:
-        return crud.update_asset(db, db_asset, payload, actor=current_user)
+        return _to_asset_response(crud.update_asset(db, db_asset, payload, actor=current_user))
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="자산코드 또는 시리얼번호가 이미 존재합니다")
@@ -164,7 +200,7 @@ def assign_asset(
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
 
     try:
-        return crud.assign_asset(db, db_asset, actor=current_user, payload=payload)
+        return _to_asset_response(crud.assign_asset(db, db_asset, actor=current_user, payload=payload))
     except ValueError:
         raise HTTPException(status_code=400, detail="폐기완료 자산은 할당할 수 없습니다")
 
@@ -181,7 +217,7 @@ def return_asset(
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
 
     try:
-        return crud.return_asset(db, db_asset, actor=current_user, payload=payload)
+        return _to_asset_response(crud.return_asset(db, db_asset, actor=current_user, payload=payload))
     except ValueError:
         raise HTTPException(status_code=400, detail="폐기완료 자산은 반납 처리할 수 없습니다")
 
@@ -197,7 +233,7 @@ def mark_disposal_required(
     if not db_asset:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
 
-    return crud.mark_disposal_required(db, db_asset, actor=current_user, payload=payload)
+    return _to_asset_response(crud.mark_disposal_required(db, db_asset, actor=current_user, payload=payload))
 
 
 @router.post("/assets/{asset_id}/mark-disposed", response_model=schemas.AssetResponse, summary="폐기완료 처리", tags=["자산"])
@@ -211,7 +247,7 @@ def mark_disposed(
     if not db_asset:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
 
-    return crud.mark_disposed(db, db_asset, actor=current_user, payload=payload)
+    return _to_asset_response(crud.mark_disposed(db, db_asset, actor=current_user, payload=payload))
 
 
 @router.delete("/assets/{asset_id}", status_code=204, summary="자산 삭제", tags=["자산"])
@@ -228,3 +264,4 @@ def delete_asset(
         raise HTTPException(status_code=400, detail="폐기완료 자산만 삭제할 수 있습니다")
 
     crud.delete_asset(db, db_asset, actor=current_user)
+
