@@ -1,7 +1,7 @@
 ﻿import threading
 
-from .. import legacy_main as legacy
 from ..database import SessionLocal
+from ..services import ldap_service
 
 LDAP_SCHEDULER_LOCK = threading.Lock()
 LDAP_SCHEDULER_STOP = threading.Event()
@@ -9,7 +9,7 @@ LDAP_SCHEDULER_THREAD: threading.Thread | None = None
 
 
 def _run_ldap_scheduled_sync_once(db):
-    return legacy._run_ldap_scheduled_sync_once(db)
+    return ldap_service._run_ldap_scheduled_sync_once(db)
 
 
 def _ldap_scheduler_loop():

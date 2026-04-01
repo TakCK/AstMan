@@ -2,6 +2,7 @@
 from sqlalchemy.orm import Session
 
 from .. import crud, legacy_main as legacy, models, schemas, security
+from ..services import csv_import_service, mail_service
 from ..database import get_db
 
 router = APIRouter()
@@ -53,7 +54,7 @@ def get_mail_smtp_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.get_mail_smtp_setting(db, _)
+    return mail_service.get_mail_smtp_setting(db, _)
 
 
 @router.put("/settings/mail/smtp", response_model=schemas.MailSmtpConfigResponse, summary="메일 SMTP 설정 저장", tags=["설정"])
@@ -62,7 +63,7 @@ def set_mail_smtp_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.set_mail_smtp_setting(payload, db, _)
+    return mail_service.set_mail_smtp_setting(payload, db, _)
 
 
 @router.get("/settings/mail/admin", response_model=schemas.MailAdminConfigResponse, summary="관리자 메일 설정 조회", tags=["설정"])
@@ -70,7 +71,7 @@ def get_mail_admin_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.get_mail_admin_setting(db, _)
+    return mail_service.get_mail_admin_setting(db, _)
 
 
 @router.put("/settings/mail/admin", response_model=schemas.MailAdminConfigResponse, summary="관리자 메일 설정 저장", tags=["설정"])
@@ -79,7 +80,7 @@ def set_mail_admin_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.set_mail_admin_setting(payload, db, _)
+    return mail_service.set_mail_admin_setting(payload, db, _)
 
 
 @router.get("/settings/mail/user", response_model=schemas.MailUserConfigResponse, summary="사용자 메일 설정 조회", tags=["설정"])
@@ -87,7 +88,7 @@ def get_mail_user_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.get_mail_user_setting(db, _)
+    return mail_service.get_mail_user_setting(db, _)
 
 
 @router.put("/settings/mail/user", response_model=schemas.MailUserConfigResponse, summary="사용자 메일 설정 저장", tags=["설정"])
@@ -96,7 +97,7 @@ def set_mail_user_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.set_mail_user_setting(payload, db, _)
+    return mail_service.set_mail_user_setting(payload, db, _)
 
 
 @router.post("/settings/mail/user/preview-targets", response_model=schemas.MailUserPreviewResponse, summary="사용자 메일 대상자 미리보기", tags=["설정"])
@@ -105,7 +106,7 @@ def preview_mail_user_targets(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.preview_mail_user_targets(payload, db, _)
+    return mail_service.preview_mail_user_targets(payload, db, _)
 
 
 @router.post("/settings/mail/admin/send-now", response_model=schemas.MailSendNowResponse, summary="관리자 메일 즉시 발송", tags=["설정"])
@@ -114,7 +115,7 @@ def send_admin_mail_now(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.send_admin_mail_now(payload, db, _)
+    return mail_service.send_admin_mail_now(payload, db, _)
 
 
 @router.post("/settings/mail/user/send-now", response_model=schemas.MailSendNowResponse, summary="사용자 메일 즉시 발송", tags=["설정"])
@@ -123,7 +124,7 @@ def send_user_mail_now(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.send_user_mail_now(payload, db, _)
+    return mail_service.send_user_mail_now(payload, db, _)
 
 
 @router.get("/settings/software-expiry-mail", response_model=schemas.SoftwareExpiryMailConfigResponse, summary="소프트웨어 만료 메일 설정 조회", tags=["설정"])
@@ -131,7 +132,7 @@ def get_software_expiry_mail_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.get_software_expiry_mail_setting(db, _)
+    return mail_service.get_software_expiry_mail_setting(db, _)
 
 
 @router.put("/settings/software-expiry-mail", response_model=schemas.SoftwareExpiryMailConfigResponse, summary="소프트웨어 만료 메일 설정 저장", tags=["설정"])
@@ -140,7 +141,7 @@ def set_software_expiry_mail_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.set_software_expiry_mail_setting(payload, db, _)
+    return mail_service.set_software_expiry_mail_setting(payload, db, _)
 
 
 @router.post("/settings/software-expiry-mail/send-now", response_model=schemas.SoftwareExpiryMailSendNowResponse, summary="소프트웨어 만료 메일 즉시 발송", tags=["설정"])
@@ -149,7 +150,7 @@ def send_software_expiry_mail_now(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return legacy.send_software_expiry_mail_now(payload, db, _)
+    return mail_service.send_software_expiry_mail_now(payload, db, _)
 
 
 @router.post("/imports/software-csv", response_model=schemas.CsvHwSwImportResponse, summary="소프트웨어 CSV 업로드", tags=["소프트웨어"])
@@ -158,7 +159,7 @@ async def import_software_csv(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(security.get_current_admin),
 ):
-    return await legacy.import_software_csv(file, db, current_user)
+    return await csv_import_service.import_csv_upload(file, db, current_user, forced_kind="sw")
 
 
 @router.post("/software-licenses", response_model=schemas.SoftwareLicenseResponse, status_code=201, summary="소프트웨어 라이선스 등록", tags=["소프트웨어"])

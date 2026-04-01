@@ -5,7 +5,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import crud, legacy_main, security
+from . import crud, security
+from .services import ldap_service, mail_service, schema_upgrade_service
 from .database import Base, SessionLocal, engine
 from .jobs import ldap_sync_job
 from .routers import assets, auth, branding, dashboard, ldap, software, users
@@ -43,7 +44,7 @@ app.include_router(branding.router)
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
-    legacy_main._upgrade_schema_for_existing_db()
+    schema_upgrade_service.run_schema_upgrade(engine)
 
     admin_username = os.getenv("ADMIN_USERNAME", "admin")
     admin_password = os.getenv("ADMIN_PASSWORD", "ChangeMe123!")
@@ -59,21 +60,22 @@ def on_startup():
                 role="admin",
             )
 
-        legacy_main._ensure_runtime_bind_password(db)
-        legacy_main._ensure_runtime_software_mail_password(db)
+        ldap_service._ensure_runtime_bind_password(db)
+        mail_service.ensure_runtime_software_mail_password(db)
     finally:
         db.close()
 
     ldap_sync_job._start_ldap_scheduler()
-    legacy_main._start_software_mail_scheduler()
+    mail_service.start_software_mail_scheduler()
 
 
 @app.on_event("shutdown")
 def on_shutdown():
     ldap_sync_job._stop_ldap_scheduler()
-    legacy_main._stop_software_mail_scheduler()
+    mail_service.stop_software_mail_scheduler()
 
 
 @app.get("/", include_in_schema=False)
 def web_index():
     return FileResponse(STATIC_DIR / "index.html")
+
