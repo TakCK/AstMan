@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>사내 IT 자산관리</title>
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/app.css?v=20260401-reportfmt2" />
 </head>
 <body>
   <div class="ambient"></div>
@@ -55,7 +55,8 @@
 
             <section id="tab-dashboard" class="tab-section active">
         <div class="dashboard-actions">
-          <button id="downloadGeneralLicenseReportBtn" type="button" class="ghost-btn">일반 라이선스/구독 보고서 다운로드</button>
+          <button id="downloadGeneralLicenseReportCsvBtn" type="button" class="ghost-btn">일반 라이선스/구독 보고서 CSV</button>
+          <button id="downloadGeneralLicenseReportHtmlBtn" type="button" class="ghost-btn">일반 라이선스/구독 보고서 HTML</button>
         </div>
         <div id="summaryCards" class="summary-cards"></div>
         <div class="split-grid dashboard-split-grid">
@@ -347,7 +348,7 @@
               <h3>할당 전체 리스트</h3>
               <button id="reloadSoftwareAssignedBtn" type="button" class="ghost-btn">새로고침</button>
             </div>
-            <form id="softwareAssignedFilterForm" class="filter-form software-filter-form software-assigned-filter-form">
+                        <form id="softwareAssignedFilterForm" class="filter-form software-filter-form software-assigned-filter-form">
               <select id="softwareAssignedFilterField">
                 <option value="all">전체 항목</option>
                 <option value="username">사용자 ID</option>
@@ -365,6 +366,11 @@
               </select>
               <select id="softwareAssignedFilterCategory">
                 <option value="">전체 구분</option>
+              </select>
+              <select id="softwareAssignedFilterScope">
+                <option value="">전체 라이선스</option>
+                <option value="필수">필수</option>
+                <option value="일반">일반</option>
               </select>
               <button type="submit" class="primary-btn">검색</button>
             </form>
@@ -1514,9 +1520,21 @@
   <datalist id="adminUserDatalist"></datalist>
   <datalist id="softwareLicenseDatalist"></datalist>
 <div id="toast" class="toast"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260401-reportfmt2"></script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

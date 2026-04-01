@@ -19,7 +19,7 @@ def _build_qr_data_url(content: str) -> str:
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
         box_size=6,
-        border=2,
+        border=0,
     )
     qr.add_data(content)
     qr.make(fit=True)
@@ -30,7 +30,43 @@ def _build_qr_data_url(content: str) -> str:
     return _to_data_url(buffer.getvalue(), "image/svg+xml")
 
 
-def _build_label_item(asset: models.Asset) -> tuple[dict | None, dict | None]:
+def _normalize_owner(value: str | None) -> str:
+    return str(value or "").strip()
+
+
+def _build_owner_display_name_map(db: Session, assets: list[models.Asset]) -> dict[str, str]:
+    owner_keys = {
+        _normalize_owner(asset.owner)
+        for asset in assets
+        if _normalize_owner(asset.owner) and _normalize_owner(asset.owner) not in {"미지정", "unassigned", "-"}
+    }
+    if not owner_keys:
+        return {}
+
+    rows = (
+        db.query(models.DirectoryUser)
+        .filter(models.DirectoryUser.username.in_(owner_keys))
+        .all()
+    )
+
+    mapping: dict[str, str] = {}
+    for row in rows:
+        key = _normalize_owner(row.username)
+        if not key:
+            continue
+        display_name = _normalize_owner(row.display_name)
+        mapping[key] = display_name or key
+    return mapping
+
+
+def _resolve_owner_display_name(owner: str | None, display_name_map: dict[str, str]) -> str:
+    owner_key = _normalize_owner(owner)
+    if not owner_key or owner_key in {"미지정", "unassigned", "-"}:
+        return "미지정"
+    return display_name_map.get(owner_key, owner_key)
+
+
+def _build_label_item(asset: models.Asset, owner_display_name: str) -> tuple[dict | None, dict | None]:
     asset_code = str(asset.asset_code or "").strip()
     asset_name = str(asset.name or "").strip() or f"asset#{asset.id}"
 
@@ -45,7 +81,7 @@ def _build_label_item(asset: models.Asset) -> tuple[dict | None, dict | None]:
         "asset_id": asset.id,
         "asset_name": asset_name,
         "asset_code": asset_code,
-        "owner": str(asset.owner or "").strip() or "unassigned",
+        "owner": owner_display_name,
         "purchase_date": asset.purchase_date,
         "rental_start_date": asset.rental_start_date,
         "rental_end_date": asset.rental_end_date,
@@ -75,7 +111,10 @@ def get_asset_label_preview(db: Session, asset_id: int) -> dict:
         )
         return response
 
-    item, excluded = _build_label_item(asset)
+    owner_map = _build_owner_display_name_map(db, [asset])
+    owner_display_name = _resolve_owner_display_name(asset.owner, owner_map)
+
+    item, excluded = _build_label_item(asset, owner_display_name)
     if item:
         response["labels"].append(item)
     if excluded:
@@ -107,6 +146,7 @@ def get_assets_label_preview(db: Session, asset_ids: list[int]) -> dict:
         .all()
     )
     row_map = {int(row.id): row for row in rows}
+    owner_map = _build_owner_display_name_map(db, rows)
 
     for asset_id in normalized_ids:
         row = row_map.get(asset_id)
@@ -120,7 +160,8 @@ def get_assets_label_preview(db: Session, asset_ids: list[int]) -> dict:
             )
             continue
 
-        item, excluded = _build_label_item(row)
+        owner_display_name = _resolve_owner_display_name(row.owner, owner_map)
+        item, excluded = _build_label_item(row, owner_display_name)
         if item:
             response["labels"].append(item)
         if excluded:

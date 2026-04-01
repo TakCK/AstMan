@@ -108,3 +108,34 @@ def download_general_license_report(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+@router.get("/dashboard/reports/general-licenses.csv", summary="일반 라이선스/구독 현황 CSV 다운로드", tags=["대시보드"])
+def download_general_license_report_csv(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(security.get_current_user),
+):
+    report_data = report_service.build_general_license_report_data(db)
+    csv_text = report_service.create_general_license_report_csv(report_data)
+    filename = f"general_license_report_{date.today().strftime('%Y%m%d')}.csv"
+
+    return StreamingResponse(
+        iter([csv_text.encode("utf-8-sig")]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/dashboard/reports/general-licenses.html", summary="일반 라이선스/구독 현황 HTML 다운로드", tags=["대시보드"])
+def download_general_license_report_html(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(security.get_current_user),
+):
+    report_data = report_service.build_general_license_report_data(db)
+    html_text = report_service.create_general_license_report_html(report_data)
+    filename = f"general_license_report_{date.today().strftime('%Y%m%d')}.html"
+
+    return StreamingResponse(
+        iter([html_text.encode("utf-8")]),
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

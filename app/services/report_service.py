@@ -1,8 +1,11 @@
 ﻿from __future__ import annotations
 
+import csv
 from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
+from html import escape
+from io import StringIO
 from typing import Any
 
 from openpyxl import Workbook
@@ -12,7 +15,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import crud, models
-
 
 def _to_float(value: Decimal | float | int | None) -> float:
     if value is None:
@@ -666,4 +668,292 @@ def create_general_license_report_workbook(report_data: dict[str, Any]) -> Workb
     _adjust_column_widths(ws_user)
 
     return wb
+
+
+
+def _format_report_number(value: Any) -> str:
+    amount = _to_float(value)
+    rounded = round(amount)
+    if abs(amount - float(rounded)) < 0.005:
+        return f"{rounded:,}"
+    return f"{amount:,.2f}"
+
+
+def create_general_license_report_csv(report_data: dict[str, Any]) -> str:
+    output = StringIO(newline="")
+    writer = csv.writer(output)
+
+    summary = report_data.get("summary") or {}
+    writer.writerow(["Summary"])
+    writer.writerow(["항목", "값"])
+    writer.writerow(["기준일", summary.get("기준일", "")])
+    writer.writerow(["총 비용(원화 환산, 1인 단가 * 총 보유 수량 기준)", _format_report_number(summary.get("총 비용", 0))])
+    writer.writerow(["총 사용자 수", _format_report_number(summary.get("총 사용자 수", 0))])
+    writer.writerow(["총 라이선스 수", _format_report_number(summary.get("총 라이선스 수", 0))])
+    writer.writerow([])
+
+    writer.writerow(["Team Summary"])
+    writer.writerow(["팀명", "사용자 수", "라이선스 수", "월 비용"])
+    for row in report_data.get("team_summary") or []:
+        writer.writerow(
+            [
+                row.get("team_name", "미할당"),
+                _format_report_number(row.get("user_count", 0)),
+                _format_report_number(row.get("license_count", 0)),
+                _format_report_number(row.get("monthly_cost", 0)),
+            ]
+        )
+    writer.writerow([])
+
+    writer.writerow(["License Summary"])
+    writer.writerow(["라이선스명", "팀", "수량", "사용자 수", "비용", "만료일"])
+    for row in report_data.get("license_summary") or []:
+        writer.writerow(
+            [
+                row.get("license_name", ""),
+                row.get("team", ""),
+                _format_report_number(row.get("quantity", 0)),
+                _format_report_number(row.get("user_count", 0)),
+                _format_report_number(row.get("cost", 0)),
+                row.get("end_date", ""),
+            ]
+        )
+    writer.writerow([])
+
+    writer.writerow(["User Detail"])
+    writer.writerow(["사용자", "팀", "라이선스", "단위비용", "보유수량", "시작일", "종료일", "검토상태", "비고"])
+    for row in report_data.get("user_detail") or []:
+        writer.writerow(
+            [
+                row.get("user", ""),
+                row.get("team", "미할당"),
+                row.get("license_name", ""),
+                _format_report_number(row.get("unit_cost", 0)),
+                _format_report_number(row.get("owned_quantity", 0)),
+                row.get("start_date", ""),
+                row.get("end_date", ""),
+                row.get("review_status", ""),
+                row.get("note", ""),
+            ]
+        )
+
+    return output.getvalue()
+
+
+def create_general_license_report_html(report_data: dict[str, Any]) -> str:
+    summary = report_data.get("summary") or {}
+    team_rows = report_data.get("team_summary") or []
+    license_rows = report_data.get("license_summary") or []
+    user_rows = report_data.get("user_detail") or []
+
+    def e(value: Any) -> str:
+        return escape(str(value or ""))
+
+    summary_cards = [
+        ("기준일", summary.get("기준일", "")),
+        ("총 비용", f"{_format_report_number(summary.get('총 비용', 0))} 원"),
+        ("총 사용자 수", f"{_format_report_number(summary.get('총 사용자 수', 0))} 명"),
+        ("총 라이선스 수", f"{_format_report_number(summary.get('총 라이선스 수', 0))} 개"),
+    ]
+
+    team_tbody = "".join(
+        f"<tr><td>{e(row.get('team_name', '미할당'))}</td><td>{e(_format_report_number(row.get('user_count', 0)))}</td><td>{e(_format_report_number(row.get('license_count', 0)))}</td><td>{e(_format_report_number(row.get('monthly_cost', 0)))} 원</td></tr>"
+        for row in team_rows
+    ) or '<tr><td colspan="4" class="empty">데이터가 없습니다.</td></tr>'
+
+    license_tbody = "".join(
+        f"<tr><td>{e(row.get('license_name', ''))}</td><td>{e(row.get('team', ''))}</td><td>{e(_format_report_number(row.get('quantity', 0)))}</td><td>{e(_format_report_number(row.get('user_count', 0)))}</td><td>{e(_format_report_number(row.get('cost', 0)))} 원</td><td>{e(row.get('end_date', ''))}</td></tr>"
+        for row in license_rows
+    ) or '<tr><td colspan="6" class="empty">데이터가 없습니다.</td></tr>'
+
+    user_tbody = "".join(
+        f"<tr><td>{e(row.get('user', ''))}</td><td>{e(row.get('team', '미할당'))}</td><td>{e(row.get('license_name', ''))}</td><td>{e(_format_report_number(row.get('unit_cost', 0)))} 원</td><td>{e(_format_report_number(row.get('owned_quantity', 0)))} 개</td><td>{e(row.get('start_date', ''))}</td><td>{e(row.get('end_date', ''))}</td><td>{e(row.get('review_status', ''))}</td><td>{e(row.get('note', ''))}</td></tr>"
+        for row in user_rows
+    ) or '<tr><td colspan="9" class="empty">데이터가 없습니다.</td></tr>'
+
+    team_user_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in user_rows:
+        team_name = str(row.get("team") or "미할당").strip() or "미할당"
+        team_user_rows[team_name].append(row)
+
+    team_tab_buttons: list[str] = []
+    team_tab_panels: list[str] = []
+
+    for idx, team_name in enumerate(sorted(team_user_rows.keys())):
+        panel_id = f"team-{idx}"
+        rows = team_user_rows[team_name]
+        team_sheet_tbody = "".join(
+            f"<tr><td>{e(row.get('user', ''))}</td><td>{e(row.get('license_name', ''))}</td><td>{e(_format_report_number(row.get('owned_quantity', 0)))} 개</td><td>{e(_format_report_number(row.get('unit_cost', 0)))} 원</td><td>{e(row.get('start_date', ''))}</td><td>{e(row.get('end_date', ''))}</td></tr>"
+            for row in rows
+        ) or '<tr><td colspan="6" class="empty">데이터가 없습니다.</td></tr>'
+
+        team_tab_buttons.append(
+            f'<button type="button" class="subtab-btn{' active' if idx == 0 else ''}" data-team-tab-target="{panel_id}">{e(team_name)}</button>'
+        )
+        team_tab_panels.append(
+            f"""
+      <section class=\"team-panel{' active' if idx == 0 else ''}\" data-team-panel=\"{panel_id}\">
+        <h3 class=\"team-title\">{e(team_name)}</h3>
+        <div class=\"table-wrap\">
+          <table>
+            <thead><tr><th>사용자</th><th>라이선스</th><th>보유수량</th><th>단위비용</th><th>시작일</th><th>종료일</th></tr></thead>
+            <tbody>{team_sheet_tbody}</tbody>
+          </table>
+        </div>
+      </section>
+"""
+        )
+
+    team_tab_buttons_html = "".join(team_tab_buttons)
+    team_tab_panels_html = "".join(team_tab_panels)
+
+    cards_html = "".join(
+        f"<article class=\"summary-card\"><h3>{e(label)}</h3><p>{e(value)}</p></article>"
+        for label, value in summary_cards
+    )
+
+    return f"""<!doctype html>
+<html lang=\"ko\">
+<head>
+  <meta charset=\"UTF-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+  <title>일반 라이선스/구독 현황 보고서</title>
+  <style>
+    :root {{
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --line: #d8dee9;
+      --title: #1f2d3d;
+      --text: #2f3b4c;
+      --muted: #5f6f82;
+      --accent: #1f628f;
+      --accent-soft: #e8f1fb;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: var(--bg); color: var(--text); font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif; }}
+    .container {{ max-width: 1320px; margin: 0 auto; padding: 24px; }}
+    .header {{ display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 16px; }}
+    .title {{ margin: 0; font-size: 28px; color: var(--title); }}
+    .subtitle {{ margin: 6px 0 0; color: var(--muted); }}
+    .tab-nav {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }}
+    .tab-btn {{ border: 1px solid #aac3da; background: #fff; color: #1f4f78; border-radius: 10px; padding: 8px 14px; font-weight: 700; cursor: pointer; }}
+    .tab-btn.active {{ background: var(--accent); color: #fff; border-color: var(--accent); }}
+    .tab-panel {{ display: none; }}
+    .tab-panel.active {{ display: block; }}
+    .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 0 0 20px; }}
+    .summary-card {{ background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }}
+    .summary-card h3 {{ margin: 0; font-size: 13px; color: var(--muted); font-weight: 700; }}
+    .summary-card p {{ margin: 8px 0 0; font-size: 24px; line-height: 1.2; color: var(--title); font-weight: 800; }}
+    .section {{ background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }}
+    .section h2 {{ margin: 0 0 10px; color: var(--title); font-size: 18px; }}
+    .table-wrap {{ overflow-x: auto; }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 860px; }}
+    th, td {{ border: 1px solid var(--line); padding: 8px 10px; font-size: 13px; text-align: left; vertical-align: middle; }}
+    thead th {{ background: #eef3f9; color: var(--title); font-weight: 700; position: sticky; top: 0; z-index: 1; }}
+    tbody tr:nth-child(even) {{ background: #fbfcff; }}
+    .empty {{ text-align: center; color: var(--muted); }}
+    .footer-note {{ color: var(--muted); font-size: 12px; margin-top: 8px; }}
+    .mono {{ font-family: "Consolas", "Menlo", monospace; }}
+    .subtab-nav {{ display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }}
+    .subtab-btn {{ border: 1px solid #b6c8da; background: #fff; color: #2a4f72; border-radius: 8px; padding: 6px 10px; font-weight: 700; cursor: pointer; font-size: 12px; }}
+    .subtab-btn.active {{ background: var(--accent-soft); border-color: #86abd0; color: #1f4f78; }}
+    .team-panel {{ display: none; }}
+    .team-panel.active {{ display: block; }}
+    .team-title {{ margin: 0 0 10px; font-size: 16px; color: var(--title); }}
+  </style>
+</head>
+<body>
+  <main class=\"container\">
+    <header class=\"header\">
+      <div>
+        <h1 class=\"title\">일반 라이선스/구독 현황 보고서</h1>
+        <p class=\"subtitle\">기준일 <span class=\"mono\">{e(summary.get('기준일', ''))}</span> / 내부 검토용 HTML 리포트</p>
+      </div>
+    </header>
+
+    <nav class=\"tab-nav\" aria-label=\"보고서 탭\">
+      <button type=\"button\" class=\"tab-btn active\" data-tab-target=\"summary\">전체 Summary</button>
+      <button type=\"button\" class=\"tab-btn\" data-tab-target=\"user-detail\">User Detail</button>
+      <button type=\"button\" class=\"tab-btn\" data-tab-target=\"team-detail\">Team Detail</button>
+    </nav>
+
+    <section class=\"tab-panel active\" data-tab-panel=\"summary\">
+      <section class=\"summary-grid\">
+        {cards_html}
+      </section>
+
+      <section class=\"section\">
+        <h2>Team Summary</h2>
+        <div class=\"table-wrap\">
+          <table>
+            <thead><tr><th>팀명</th><th>사용자 수</th><th>라이선스 수</th><th>월 비용</th></tr></thead>
+            <tbody>{team_tbody}</tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class=\"section\">
+        <h2>License Summary</h2>
+        <div class=\"table-wrap\">
+          <table>
+            <thead><tr><th>라이선스명</th><th>팀</th><th>수량</th><th>사용자 수</th><th>비용</th><th>만료일</th></tr></thead>
+            <tbody>{license_tbody}</tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section class=\"tab-panel\" data-tab-panel=\"user-detail\">
+      <section class=\"section\">
+        <h2>User Detail</h2>
+        <div class=\"table-wrap\">
+          <table>
+            <thead><tr><th>사용자</th><th>팀</th><th>라이선스</th><th>단위비용</th><th>보유수량</th><th>시작일</th><th>종료일</th><th>검토상태</th><th>비고</th></tr></thead>
+            <tbody>{user_tbody}</tbody>
+          </table>
+        </div>
+        <p class=\"footer-note\">비용은 설정 환율이 반영된 원화 기준입니다.</p>
+      </section>
+    </section>
+
+    <section class=\"tab-panel\" data-tab-panel=\"team-detail\">
+      <section class=\"section\">
+        <h2>Team Detail</h2>
+        {f'<div class="subtab-nav">{team_tab_buttons_html}</div><div>{team_tab_panels_html}</div>' if team_tab_buttons_html else '<div class="empty">팀별 상세 데이터가 없습니다.</div>'}
+      </section>
+    </section>
+  </main>
+
+  <script>
+    (() => {{
+      const tabButtons = Array.from(document.querySelectorAll('[data-tab-target]'));
+      const tabPanels = Array.from(document.querySelectorAll('[data-tab-panel]'));
+      tabButtons.forEach((button) => {{
+        button.addEventListener('click', () => {{
+          const target = button.getAttribute('data-tab-target');
+          tabButtons.forEach((b) => b.classList.remove('active'));
+          tabPanels.forEach((panel) => {{
+            panel.classList.toggle('active', panel.getAttribute('data-tab-panel') === target);
+          }});
+          button.classList.add('active');
+        }});
+      }});
+
+      const teamTabButtons = Array.from(document.querySelectorAll('[data-team-tab-target]'));
+      const teamPanels = Array.from(document.querySelectorAll('[data-team-panel]'));
+      teamTabButtons.forEach((button) => {{
+        button.addEventListener('click', () => {{
+          const target = button.getAttribute('data-team-tab-target');
+          teamTabButtons.forEach((b) => b.classList.remove('active'));
+          teamPanels.forEach((panel) => {{
+            panel.classList.toggle('active', panel.getAttribute('data-team-panel') === target);
+          }});
+          button.classList.add('active');
+        }});
+      }});
+    }})();
+  </script>
+</body>
+</html>
+"""
 

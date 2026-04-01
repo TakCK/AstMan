@@ -3039,11 +3039,11 @@ function buildLabelsPrintHtml(preview) {
       <div class="code-block">
         <img class="qr" src="${item?.qr_code_data_url || ""}" alt="QR" />
         <table class="label-info-table">
-          <tbody>
-            <tr><th>자산코드</th><td>${escapeHtml(item?.asset_code || "-")}</td></tr>
-            <tr><th>사용자</th><td>${escapeHtml(item?.owner || "미지정")}</td></tr>
-            <tr><th>구매일자</th><td>${escapeHtml(item?.purchase_date || "-")}</td></tr>
-            <tr><th>대여일자</th><td>${escapeHtml(getRentalDateText(item))}</td></tr>
+                    <tbody>
+            <tr><td>자산코드 ${escapeHtml(item?.asset_code || "-")}</td></tr>
+            <tr><td>사용자 ${escapeHtml(item?.owner || "미지정")}</td></tr>
+            <tr><td>구매일자 ${escapeHtml(item?.purchase_date || "-")}</td></tr>
+            <tr><td>대여일자 ${escapeHtml(getRentalDateText(item))}</td></tr>
           </tbody>
         </table>
       </div>
@@ -3057,23 +3057,24 @@ function buildLabelsPrintHtml(preview) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>자산 스티커 미리보기</title>
   <style>
-    body { font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif; margin: 14px; color: #1a2b3f; }
+    body { font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif; margin: 14px; color: #1a2b3f; font-weight: 700; }
     .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
     .toolbar button { border: none; border-radius: 8px; padding: 8px 12px; background: #1f628f; color: #fff; cursor: pointer; }
     .excluded-box { border: 1px solid #e0c9a3; background: #fff8ec; border-radius: 10px; padding: 10px; margin-bottom: 10px; }
     .excluded-box ul { margin: 8px 0 0; padding-left: 18px; }
-    .sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
-    .sticker { border: 1px solid #cfd9e4; border-radius: 10px; padding: 8px; min-height: 128px; page-break-inside: avoid; }
+    .sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; align-items: start; }
+    .sticker { border: none; border-radius: 0; padding: 8px; page-break-inside: avoid; }
     .code-block { display: grid; grid-template-columns: 100px 1fr; gap: 10px; align-items: start; }
-    .qr { width: 96px; height: 96px; object-fit: contain; border: 1px solid #d9e1ea; border-radius: 4px; }
-    .label-info-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .label-info-table th, .label-info-table td { border: 1px solid #d9e1ea; padding: 4px 6px; text-align: left; vertical-align: middle; }
-    .label-info-table th { width: 84px; background: #f3f7fb; font-weight: 700; color: #2f4359; }
+    .qr { display: block; width: 96px; height: 96px; object-fit: contain; border: 1px solid #d9e1ea; border-radius: 4px; }
+    .label-info-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .label-info-table td { border: 1px solid #d9e1ea; padding: 6px 10px; text-align: left; vertical-align: middle; font-weight: 700; }
+    
     @media print {
-      body { margin: 0; padding: 6mm; }
+      @page { margin: 0; }
+      body { margin: 0; padding: 1mm 1.5mm; }
       .toolbar { display: none !important; }
-      .sheet { gap: 6mm; }
-      .sticker { width: 90mm; min-height: 42mm; }
+      .sheet { gap: 1.5mm; }
+      .sticker { width: 90mm; padding: 2px; }
     }
   </style>
 </head>
@@ -3941,6 +3942,7 @@ function getSoftwareAssignedOverviewRows() {
       const department = String(user?.department || "").trim() || "-";
       const licenseName = String(license?.product_name || `라이선스 #${license?.id || ""}`).trim();
       const category = String(license?.license_category || "기타").trim() || "기타";
+      const licenseScope = normalizeSoftwareLicenseScope(license?.license_scope);
       const purchaseModel = String(detail?.purchase_model || license?.subscription_type || "-").trim() || "-";
       const startDate = String(detail?.start_date || license?.start_date || "").trim() || null;
       const endDate = String(detail?.end_date || license?.end_date || "").trim() || null;
@@ -3968,6 +3970,7 @@ function getSoftwareAssignedOverviewRows() {
         license_name: licenseName,
         assignment_count: assignmentCount,
         category,
+        license_scope: licenseScope,
         username,
         display_name: displayName,
         department,
@@ -4013,6 +4016,7 @@ function renderSoftwareAssignedRows() {
   const searchField = String(document.getElementById("softwareAssignedFilterField")?.value || "all").trim();
   const expiringFilter = String(document.getElementById("softwareAssignedFilterExpiring")?.value || "").trim();
   const categoryFilter = String(document.getElementById("softwareAssignedFilterCategory")?.value || "").trim();
+  const scopeFilter = String(document.getElementById("softwareAssignedFilterScope")?.value || "").trim();
 
   let rows = getSoftwareAssignedOverviewRows();
 
@@ -4022,6 +4026,11 @@ function renderSoftwareAssignedRows() {
 
   if (categoryFilter) {
     rows = rows.filter((row) => String(row.category || "") === categoryFilter);
+  }
+
+  if (scopeFilter) {
+    const normalizedScopeFilter = normalizeSoftwareLicenseScope(scopeFilter);
+    rows = rows.filter((row) => normalizeSoftwareLicenseScope(row.license_scope) === normalizedScopeFilter);
   }
 
   if (expiringFilter === "30") {
@@ -4575,12 +4584,15 @@ function parseAttachmentFilename(contentDisposition) {
   return "";
 }
 
-function buildGeneralLicenseReportFallbackFilename() {
+function buildGeneralLicenseReportFallbackFilename(format = "xlsx") {
   const now = new Date();
   const yyyy = String(now.getFullYear());
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const dd = String(now.getDate()).padStart(2, "0");
-  return `general_license_report_${yyyy}${mm}${dd}.xlsx`;
+  const safeFormat = ["xlsx", "csv", "html"].includes(String(format || "").toLowerCase())
+    ? String(format).toLowerCase()
+    : "xlsx";
+  return `general_license_report_${yyyy}${mm}${dd}.${safeFormat}`;
 }
 
 function triggerBlobDownload(blob, filename) {
@@ -4594,8 +4606,12 @@ function triggerBlobDownload(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-async function downloadGeneralLicenseReport() {
-  const response = await fetch("/dashboard/reports/general-licenses.xlsx", {
+async function downloadGeneralLicenseReport(format = "xlsx") {
+  const safeFormat = ["xlsx", "csv", "html"].includes(String(format || "").toLowerCase())
+    ? String(format).toLowerCase()
+    : "xlsx";
+
+  const response = await fetch(`/dashboard/reports/general-licenses.${safeFormat}`, {
     method: "GET",
     headers: {
       ...authHeaders(),
@@ -4615,7 +4631,7 @@ async function downloadGeneralLicenseReport() {
 
   const blob = await response.blob();
   const headerFilename = parseAttachmentFilename(response.headers.get("Content-Disposition"));
-  const filename = headerFilename || buildGeneralLicenseReportFallbackFilename();
+  const filename = headerFilename || buildGeneralLicenseReportFallbackFilename(safeFormat);
   triggerBlobDownload(blob, filename);
 }
 function buildHardwareImportTemplateCsv() {
@@ -5518,10 +5534,19 @@ document.getElementById("exportAssetsCsvBtn")?.addEventListener("click", async (
   await exportAssetsCsv();
 });
 
-document.getElementById("downloadGeneralLicenseReportBtn")?.addEventListener("click", async () => {
+document.getElementById("downloadGeneralLicenseReportCsvBtn")?.addEventListener("click", async () => {
   try {
-    await downloadGeneralLicenseReport();
-    showToast("일반 라이선스/구독 보고서를 다운로드했습니다.");
+    await downloadGeneralLicenseReport("csv");
+    showToast("일반 라이선스/구독 CSV 보고서를 다운로드했습니다.");
+  } catch (error) {
+    showToast(error.message || "보고서 다운로드에 실패했습니다.");
+  }
+});
+
+document.getElementById("downloadGeneralLicenseReportHtmlBtn")?.addEventListener("click", async () => {
+  try {
+    await downloadGeneralLicenseReport("html");
+    showToast("일반 라이선스/구독 HTML 보고서를 다운로드했습니다.");
   } catch (error) {
     showToast(error.message || "보고서 다운로드에 실패했습니다.");
   }
@@ -6954,6 +6979,17 @@ async function initialize() {
 }
 
 initialize();
+
+
+
+
+
+
+
+
+
+
+
 
 
 

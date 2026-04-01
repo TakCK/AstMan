@@ -364,7 +364,21 @@ button:hover {
 .dashboard-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-bottom: 10px;
+}
+
+.dashboard-actions .ghost-btn {
+  border: 1px solid #b6c8db;
+  background: #f4f8fc;
+  color: #1d4f72;
+  font-weight: 700;
+}
+
+.dashboard-actions .ghost-btn:hover {
+  border-color: #8aa8c4;
+  background: #eaf2fb;
 }
 
 .software-cost-summary-wrap {
@@ -1967,3 +1981,8 @@ tbody tr:hover {
   font-size: 0.88rem;
   padding: 6px 2px;
 }
+
+
+
+
+
