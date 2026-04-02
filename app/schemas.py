@@ -67,10 +67,55 @@ class UserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-
 class UserAdminUpdate(BaseModel):
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+class OrganizationUnitBase(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    code: str | None = Field(default=None, max_length=50)
+    parent_id: int | None = Field(default=None, ge=1)
+    sort_order: int = 0
+
+
+class OrganizationUnitCreate(OrganizationUnitBase):
+    pass
+
+
+class OrganizationUnitUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    code: str | None = Field(default=None, max_length=50)
+    parent_id: int | None = Field(default=None, ge=1)
+    is_active: bool | None = None
+    sort_order: int | None = None
+
+
+class OrganizationUnitResponse(BaseModel):
+    id: int
+    name: str
+    code: str | None = None
+    parent_id: int | None = None
+    parent_name: str | None = None
+    is_active: bool
+    sort_order: int
+    active_child_count: int = 0
+    active_user_count: int = 0
+    active_asset_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class OrganizationUnitDeactivationPreviewResponse(BaseModel):
+    org_unit_id: int
+    org_unit_name: str
+    has_active_children: bool
+    child_count: int
+    active_user_count: int
+    active_asset_count: int
+    blocking_reasons: list[str] = Field(default_factory=list)
 
 
 class DirectoryUserResponse(BaseModel):
@@ -79,6 +124,8 @@ class DirectoryUserResponse(BaseModel):
     display_name: str | None = None
     email: str | None = None
     department: str | None = None
+    org_unit_id: int | None = None
+    org_unit_name: str | None = None
     title: str | None = None
     manager_dn: str | None = None
     user_dn: str | None = None
@@ -90,12 +137,12 @@ class DirectoryUserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-
 class DirectoryUserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=120)
     display_name: str | None = Field(default=None, max_length=200)
     email: str | None = Field(default=None, max_length=200)
     department: str | None = Field(default=None, max_length=120)
+    org_unit_id: int | None = Field(default=None, ge=1)
     title: str | None = Field(default=None, max_length=120)
     manager_dn: str | None = Field(default=None, max_length=500)
     user_dn: str | None = Field(default=None, max_length=500)
@@ -106,6 +153,7 @@ class DirectoryUserUpdate(BaseModel):
     display_name: str | None = Field(default=None, max_length=200)
     email: str | None = Field(default=None, max_length=200)
     department: str | None = Field(default=None, max_length=120)
+    org_unit_id: int | None = Field(default=None, ge=1)
     title: str | None = Field(default=None, max_length=120)
     manager_dn: str | None = Field(default=None, max_length=500)
     user_dn: str | None = Field(default=None, max_length=500)
@@ -118,6 +166,7 @@ class DirectoryUserImportItem(BaseModel):
     display_name: str | None = Field(default=None, max_length=200)
     email: str | None = Field(default=None, max_length=200)
     department: str | None = Field(default=None, max_length=120)
+    org_unit_id: int | None = Field(default=None, ge=1)
     title: str | None = Field(default=None, max_length=120)
     manager_dn: str | None = Field(default=None, max_length=500)
     user_dn: str | None = Field(default=None, max_length=500)
@@ -171,7 +220,6 @@ class DirectoryUserDeactivateResponse(BaseModel):
     remaining_asset_count: int
     assigned_license_count: int
     user: DirectoryUserResponse
-
 class LdapSyncScheduleRequest(BaseModel):
     enabled: bool = False
     interval_minutes: int = Field(default=60, ge=5, le=1440)
@@ -249,6 +297,7 @@ class AssetBase(BaseModel):
     owner: str = Field(default="미지정", min_length=1, max_length=120)
     manager: str = Field(default="미지정", min_length=1, max_length=120)
     department: str | None = Field(default=None, max_length=120)
+    org_unit_id: int | None = Field(default=None, ge=1)
     location: str = Field(default="미지정", min_length=1, max_length=120)
     status: AssetStatusType = "대기"
     serial_number: str | None = Field(default=None, max_length=120)
@@ -275,6 +324,7 @@ class AssetUpdate(BaseModel):
     owner: str | None = Field(default=None, min_length=1, max_length=120)
     manager: str | None = Field(default=None, min_length=1, max_length=120)
     department: str | None = Field(default=None, max_length=120)
+    org_unit_id: int | None = Field(default=None, ge=1)
     location: str | None = Field(default=None, max_length=120)
     status: AssetStatusType | None = None
     serial_number: str | None = Field(default=None, max_length=120)
@@ -290,6 +340,7 @@ class AssetUpdate(BaseModel):
 
 class AssetResponse(AssetBase):
     id: int
+    org_unit_name: str | None = None
     created_at: datetime
     updated_at: datetime
     disposed_at: datetime | None = None
@@ -773,6 +824,10 @@ class AssetLabelPreviewResponse(BaseModel):
     branding_logo_path: str = ""
     labels: list[AssetLabelItem] = Field(default_factory=list)
     excluded: list[AssetLabelExcludedItem] = Field(default_factory=list)
+
+
+
+
 
 
 

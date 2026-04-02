@@ -14,6 +14,7 @@ from ldap3.utils.conv import escape_filter_chars
 from sqlalchemy.orm import Session
 
 from .. import crud, schemas
+from . import user_service
 
 LDAP_SYNC_SCHEDULE_KEY = "ldap_sync_schedule"
 LDAP_SYNC_STATE_KEY = "ldap_sync_state"
@@ -442,6 +443,7 @@ def _sync_directory_users_now(
         query="",
         size_limit=size_limit,
     )
+    users = user_service.apply_directory_user_sync_hooks(db, users)
     result = crud.upsert_directory_users(db, users, source="ldap", deactivate_missing=True, keep_inactive=True)
     result["total_synced"] = len(users)
     return result
@@ -579,3 +581,6 @@ def ldap_sync_now(payload: schemas.LdapSyncNowRequest, db: Session):
 
         _set_sync_state(db, last_error="LDAP 서버 주소를 확인해주세요", last_result=None)
         raise HTTPException(status_code=400, detail="LDAP 서버 주소를 확인해주세요")
+
+
+

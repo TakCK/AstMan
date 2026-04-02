@@ -1,9 +1,9 @@
 ﻿from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import crud, models, schemas, security
+from .. import models, schemas, security
 from ..database import get_db
+from ..services import user_service
 
 router = APIRouter()
 
@@ -14,19 +14,12 @@ def create_user(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    if crud.get_user_by_username(db, payload.username):
-        raise HTTPException(status_code=409, detail="이미 존재하는 사용자명입니다")
-
     try:
-        return crud.create_user(
-            db=db,
-            username=payload.username,
-            password_hash=security.hash_password(payload.password),
-            role=payload.role,
-        )
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="이미 존재하는 사용자명입니다")
+        return user_service.create_user(db, payload)
+    except ValueError as e:
+        if str(e) == "user_exists":
+            raise HTTPException(status_code=409, detail="이미 존재하는 사용자명입니다")
+        raise HTTPException(status_code=400, detail="사용자 생성 요청을 확인해주세요")
 
 
 @router.get("/users", response_model=list[schemas.UserResponse], summary="사용자 목록 조회", tags=["사용자"])
@@ -37,11 +30,12 @@ def list_users(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    if role and role not in {"user", "admin"}:
-        raise HTTPException(status_code=400, detail="role은 user 또는 admin 이어야 합니다")
-
-    safe_limit = max(1, min(limit, 500))
-    return crud.list_users(db, role=role, q=q, limit=safe_limit)
+    try:
+        return user_service.list_users(db, role=role, q=q, limit=limit)
+    except ValueError as e:
+        if str(e) == "invalid_role":
+            raise HTTPException(status_code=400, detail="role은 user 또는 admin 이어야 합니다")
+        raise HTTPException(status_code=400, detail="요청 값을 확인해주세요")
 
 
 @router.put("/users/{user_id}", response_model=schemas.UserResponse, summary="사용자 정보 수정", tags=["사용자"])
@@ -51,21 +45,14 @@ def update_user_admin(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    db_user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not db_user:
+    try:
+        updated = user_service.update_user_admin(db, user_id, payload)
+    except ValueError as e:
+        if str(e) == "empty_update":
+            raise HTTPException(status_code=400, detail="수정할 항목이 없습니다")
+        raise HTTPException(status_code=400, detail="요청 값을 확인해주세요")
+
+    if not updated:
         raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
 
-    updates = payload.model_dump(exclude_unset=True)
-    if not updates:
-        raise HTTPException(status_code=400, detail="수정할 항목이 없습니다")
-
-    password_hash = None
-    if updates.get("password"):
-        password_hash = security.hash_password(updates["password"])
-
-    return crud.update_user_admin(
-        db,
-        db_user,
-        is_active=updates.get("is_active"),
-        password_hash=password_hash,
-    )
+    return updated

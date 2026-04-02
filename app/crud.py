@@ -98,13 +98,77 @@ def _resolve_department_from_owner(db: Session, owner: str | None, fallback: str
         return None
 
     directory_user = get_directory_user_by_username(db, owner_key)
-    if directory_user and directory_user.department:
-        resolved = directory_user.department.strip()
-        if resolved:
-            return resolved
+    if directory_user:
+        if directory_user.org_unit_id:
+            org_name = _resolve_org_unit_name_by_id(db, directory_user.org_unit_id)
+            if org_name:
+                return org_name
+
+        if directory_user.department:
+            resolved = directory_user.department.strip()
+            if resolved:
+                return resolved
 
     fallback_text = (fallback or "").strip()
     return fallback_text or None
+
+
+def _normalize_department_name(value: str | None) -> str:
+    return str(value or "").strip()
+
+
+def _resolve_org_unit_name_by_id(db: Session, org_unit_id: int | None) -> str | None:
+    if not org_unit_id:
+        return None
+    row = get_org_unit_by_id(db, int(org_unit_id))
+    if not row:
+        return None
+    name = str(row.name or "").strip()
+    return name or None
+
+
+def _guess_org_unit_id_by_department_name(db: Session, department: str | None) -> int | None:
+    department_name = _normalize_department_name(department)
+    if not department_name:
+        return None
+
+    row = get_org_unit_by_name(db, department_name)
+    if not row:
+        return None
+    return int(row.id)
+
+
+def _resolve_org_unit_id(
+    db: Session,
+    org_unit_id,
+    department: str | None,
+    *,
+    strict: bool = False,
+    auto_map_by_department: bool = True,
+) -> int | None:
+    raw = org_unit_id
+    if raw not in (None, ""):
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            if strict:
+                raise ValueError("org_unit_not_found")
+            parsed = None
+
+        if parsed:
+            row = get_org_unit_by_id(db, parsed)
+            if row:
+                return int(row.id)
+            if strict:
+                raise ValueError("org_unit_not_found")
+
+        if strict:
+            raise ValueError("org_unit_not_found")
+
+    if auto_map_by_department:
+        return _guess_org_unit_id_by_department_name(db, department)
+
+    return None
 
 
 def _normalize_assignees(values: list[str] | None, *, allow_duplicates: bool = False) -> list[str]:
@@ -382,6 +446,95 @@ def update_user_admin(
     return db_user
 
 
+def list_org_units(db: Session, include_inactive: bool = True) -> list[models.OrganizationUnit]:
+    query = db.query(models.OrganizationUnit)
+    if not include_inactive:
+        query = query.filter(models.OrganizationUnit.is_active.is_(True))
+
+    return query.order_by(models.OrganizationUnit.sort_order.asc(), models.OrganizationUnit.name.asc()).all()
+
+
+def get_org_unit_by_id(db: Session, org_unit_id: int) -> models.OrganizationUnit | None:
+    return db.query(models.OrganizationUnit).filter(models.OrganizationUnit.id == org_unit_id).first()
+
+
+def get_org_unit_by_name(db: Session, name: str) -> models.OrganizationUnit | None:
+    key = str(name or "").strip()
+    if not key:
+        return None
+    return db.query(models.OrganizationUnit).filter(models.OrganizationUnit.name == key).first()
+
+
+def create_org_unit(db: Session, payload: schemas.OrganizationUnitCreate) -> models.OrganizationUnit:
+    data = payload.model_dump()
+    name = str(data.get("name") or "").strip()
+    code = str(data.get("code") or "").strip() or None
+    parent_id = data.get("parent_id")
+    sort_order = int(data.get("sort_order") or 0)
+
+    if not name:
+        raise ValueError("org_unit_name_required")
+
+    if parent_id is not None and not get_org_unit_by_id(db, int(parent_id)):
+        raise ValueError("org_unit_parent_not_found")
+
+    row = models.OrganizationUnit(
+        name=name,
+        code=code,
+        parent_id=int(parent_id) if parent_id is not None else None,
+        is_active=True,
+        sort_order=sort_order,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_org_unit(
+    db: Session,
+    db_org_unit: models.OrganizationUnit,
+    payload: schemas.OrganizationUnitUpdate,
+) -> models.OrganizationUnit:
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "name" in updates:
+        name = str(updates.get("name") or "").strip()
+        if not name:
+            raise ValueError("org_unit_name_required")
+        db_org_unit.name = name
+
+    if "code" in updates:
+        db_org_unit.code = str(updates.get("code") or "").strip() or None
+
+    if "parent_id" in updates:
+        parent_id = updates.get("parent_id")
+        if parent_id is not None:
+            parent_id = int(parent_id)
+            if parent_id == int(db_org_unit.id):
+                raise ValueError("org_unit_parent_invalid")
+            if not get_org_unit_by_id(db, parent_id):
+                raise ValueError("org_unit_parent_not_found")
+        db_org_unit.parent_id = parent_id
+
+    if "is_active" in updates:
+        db_org_unit.is_active = bool(updates.get("is_active"))
+
+    if "sort_order" in updates and updates.get("sort_order") is not None:
+        db_org_unit.sort_order = int(updates.get("sort_order") or 0)
+
+    db.commit()
+    db.refresh(db_org_unit)
+    return db_org_unit
+
+
+def deactivate_org_unit(db: Session, db_org_unit: models.OrganizationUnit) -> models.OrganizationUnit:
+    db_org_unit.is_active = False
+    db.commit()
+    db.refresh(db_org_unit)
+    return db_org_unit
+
+
 def get_app_setting(db: Session, key: str, default: dict | None = None) -> dict:
     row = db.query(models.AppSetting).filter(models.AppSetting.key == key).first()
     if not row or not isinstance(row.value, dict):
@@ -491,11 +644,18 @@ def list_directory_users(
     q: str | None = None,
     limit: int = 200,
     include_inactive: bool = False,
+    org_unit_id: int | None = None,
 ) -> list[models.DirectoryUser]:
-    query = db.query(models.DirectoryUser)
+    query = db.query(models.DirectoryUser).outerjoin(
+        models.OrganizationUnit,
+        models.DirectoryUser.org_unit_id == models.OrganizationUnit.id,
+    )
 
     if not include_inactive:
         query = query.filter(models.DirectoryUser.is_active.is_(True))
+
+    if org_unit_id:
+        query = query.filter(models.DirectoryUser.org_unit_id == int(org_unit_id))
 
     if q:
         keyword = f"%{q}%"
@@ -504,11 +664,12 @@ def list_directory_users(
                 models.DirectoryUser.username.ilike(keyword),
                 models.DirectoryUser.display_name.ilike(keyword),
                 models.DirectoryUser.email.ilike(keyword),
+                models.DirectoryUser.department.ilike(keyword),
+                models.OrganizationUnit.name.ilike(keyword),
             )
         )
 
     return query.order_by(models.DirectoryUser.username.asc()).limit(limit).all()
-
 
 def get_directory_user_by_id(db: Session, directory_user_id: int) -> models.DirectoryUser | None:
     return db.query(models.DirectoryUser).filter(models.DirectoryUser.id == directory_user_id).first()
@@ -530,11 +691,25 @@ def create_directory_user(
     if get_directory_user_by_username(db, username):
         raise ValueError("directory_user_exists")
 
+    raw_department = (payload.department or "").strip() or None
+    resolved_org_unit_id = _resolve_org_unit_id(
+        db,
+        payload.org_unit_id,
+        raw_department,
+        strict=payload.org_unit_id not in (None, ""),
+        auto_map_by_department=True,
+    )
+
+    resolved_department = raw_department
+    if not resolved_department and resolved_org_unit_id:
+        resolved_department = _resolve_org_unit_name_by_id(db, resolved_org_unit_id)
+
     row = models.DirectoryUser(
         username=username,
         display_name=(payload.display_name or "").strip() or None,
         email=(payload.email or "").strip() or None,
-        department=(payload.department or "").strip() or None,
+        department=resolved_department,
+        org_unit_id=resolved_org_unit_id,
         title=(payload.title or "").strip() or None,
         manager_dn=(payload.manager_dn or "").strip() or None,
         user_dn=(payload.user_dn or "").strip() or None,
@@ -562,6 +737,26 @@ def update_directory_user(
         db_user.email = (updates.get("email") or "").strip() or None
     if "department" in updates:
         db_user.department = (updates.get("department") or "").strip() or None
+    if "org_unit_id" in updates:
+        db_user.org_unit_id = _resolve_org_unit_id(
+            db,
+            updates.get("org_unit_id"),
+            db_user.department,
+            strict=updates.get("org_unit_id") not in (None, ""),
+            auto_map_by_department=False,
+        )
+    elif "department" in updates and not db_user.org_unit_id:
+        db_user.org_unit_id = _resolve_org_unit_id(
+            db,
+            None,
+            db_user.department,
+            strict=False,
+            auto_map_by_department=True,
+        )
+
+    if db_user.org_unit_id and not db_user.department:
+        db_user.department = _resolve_org_unit_name_by_id(db, db_user.org_unit_id)
+
     if "title" in updates:
         db_user.title = (updates.get("title") or "").strip() or None
     if "manager_dn" in updates:
@@ -593,11 +788,24 @@ def upsert_directory_users(
         username = str(item.get("username") or "").strip()
         if not username:
             continue
+
+        department = (item.get("department") or "").strip() or None
+        org_unit_id = _resolve_org_unit_id(
+            db,
+            item.get("org_unit_id"),
+            department,
+            strict=False,
+            auto_map_by_department=True,
+        )
+        if not department and org_unit_id:
+            department = _resolve_org_unit_name_by_id(db, org_unit_id)
+
         incoming[username] = {
             "username": username,
             "display_name": (item.get("display_name") or "").strip() or None,
             "email": (item.get("email") or "").strip() or None,
-            "department": (item.get("department") or "").strip() or None,
+            "department": department,
+            "org_unit_id": org_unit_id,
             "title": (item.get("title") or "").strip() or None,
             "manager_dn": (item.get("manager_dn") or "").strip() or None,
             "user_dn": (item.get("user_dn") or "").strip() or None,
@@ -621,6 +829,7 @@ def upsert_directory_users(
                 display_name=payload["display_name"],
                 email=payload["email"],
                 department=payload["department"],
+                org_unit_id=payload["org_unit_id"],
                 title=payload["title"],
                 manager_dn=payload["manager_dn"],
                 user_dn=payload["user_dn"],
@@ -634,7 +843,7 @@ def upsert_directory_users(
             continue
 
         changed = False
-        for field in ["display_name", "email", "department", "title", "manager_dn", "user_dn", "object_guid"]:
+        for field in ["display_name", "email", "department", "org_unit_id", "title", "manager_dn", "user_dn", "object_guid"]:
             new_value = payload[field]
             if getattr(row, field) != new_value:
                 setattr(row, field, new_value)
@@ -676,6 +885,7 @@ def upsert_directory_users(
         "deactivated": deactivated,
     }
 
+
 def _asset_snapshot(asset: models.Asset) -> dict:
     return {
         "id": asset.id,
@@ -688,6 +898,7 @@ def _asset_snapshot(asset: models.Asset) -> dict:
         "owner": asset.owner,
         "manager": asset.manager,
         "department": asset.department,
+        "org_unit_id": asset.org_unit_id,
         "location": asset.location,
         "status": normalize_status(asset.status),
         "disposed_at": _to_json_value(asset.disposed_at),
@@ -729,6 +940,19 @@ def create_asset(db: Session, asset: schemas.AssetCreate, actor: models.User) ->
     payload["owner"] = payload_owner
     payload["manager"] = _normalize_manager(payload_owner, payload.get("manager"))
     payload["department"] = _resolve_department_from_owner(db, payload_owner, payload.get("department"))
+
+    payload_org_unit_id = _resolve_org_unit_id(
+        db,
+        payload.get("org_unit_id"),
+        payload.get("department"),
+        strict=payload.get("org_unit_id") not in (None, ""),
+        auto_map_by_department=True,
+    )
+    payload["org_unit_id"] = payload_org_unit_id
+
+    if not payload.get("department") and payload_org_unit_id:
+        payload["department"] = _resolve_org_unit_name_by_id(db, payload_org_unit_id)
+
     payload["disposed_at"] = datetime.now(timezone.utc) if payload["status"] == "폐기완료" else None
 
     rental_start_date, rental_end_date = _normalize_rental_period(
@@ -767,13 +991,17 @@ def list_assets(
     usage_type: str | None = None,
     category: str | None = None,
     department: str | None = None,
+    org_unit_id: int | None = None,
     q: str | None = None,
     exclude_disposed: bool = False,
     warranty_expiring_days: int | None = None,
     warranty_overdue: bool = False,
     rental_expiring_days: int | None = None,
 ):
-    query = db.query(models.Asset)
+    query = db.query(models.Asset).outerjoin(
+        models.OrganizationUnit,
+        models.Asset.org_unit_id == models.OrganizationUnit.id,
+    )
 
     if status:
         normalized = normalize_status(status)
@@ -787,6 +1015,9 @@ def list_assets(
 
     if department:
         query = query.filter(models.Asset.department.ilike(f"%{department}%"))
+
+    if org_unit_id:
+        query = query.filter(models.Asset.org_unit_id == int(org_unit_id))
 
     if exclude_disposed:
         query = query.filter(models.Asset.status != "폐기완료")
@@ -802,6 +1033,7 @@ def list_assets(
                 models.Asset.manager.ilike(keyword),
                 models.Asset.location.ilike(keyword),
                 models.Asset.department.ilike(keyword),
+                models.OrganizationUnit.name.ilike(keyword),
             )
         )
 
@@ -825,7 +1057,6 @@ def list_assets(
         query = query.filter(models.Asset.rental_end_date <= rental_until)
 
     return query.order_by(models.Asset.id.desc()).offset(skip).limit(limit).all()
-
 
 def get_asset(db: Session, asset_id: int):
     return db.query(models.Asset).filter(models.Asset.id == asset_id).first()
@@ -878,6 +1109,28 @@ def update_asset(
     updates["manager"] = _normalize_manager(resolved_owner, manager_source)
     department_source = updates.get("department", db_asset.department)
     updates["department"] = _resolve_department_from_owner(db, resolved_owner, department_source)
+
+    if "org_unit_id" in updates:
+        updates["org_unit_id"] = _resolve_org_unit_id(
+            db,
+            updates.get("org_unit_id"),
+            updates.get("department"),
+            strict=updates.get("org_unit_id") not in (None, ""),
+            auto_map_by_department=False,
+        )
+    else:
+        updates["org_unit_id"] = db_asset.org_unit_id
+        if not updates["org_unit_id"]:
+            updates["org_unit_id"] = _resolve_org_unit_id(
+                db,
+                None,
+                updates.get("department"),
+                strict=False,
+                auto_map_by_department=True,
+            )
+
+    if not updates.get("department") and updates.get("org_unit_id"):
+        updates["department"] = _resolve_org_unit_name_by_id(db, updates.get("org_unit_id"))
 
     changes = {}
 
@@ -950,10 +1203,22 @@ def assign_asset(
     if current_status == "폐기완료":
         raise ValueError("disposed")
 
+    resolved_department = _resolve_department_from_owner(db, payload.assignee, payload.department)
+    resolved_org_unit_id = _resolve_org_unit_id(
+        db,
+        None,
+        resolved_department,
+        strict=False,
+        auto_map_by_department=True,
+    )
+    if not resolved_department and resolved_org_unit_id:
+        resolved_department = _resolve_org_unit_name_by_id(db, resolved_org_unit_id)
+
     updates = {
         "status": "사용중",
         "owner": payload.assignee,
-        "department": _resolve_department_from_owner(db, payload.assignee, payload.department),
+        "department": resolved_department,
+        "org_unit_id": resolved_org_unit_id,
         "disposed_at": None,
     }
     if payload.location is not None:
@@ -983,6 +1248,7 @@ def return_asset(
         "status": "대기",
         "owner": "미지정",
         "department": None,
+        "org_unit_id": None,
         "disposed_at": None,
     }
     if payload.location is not None:
@@ -1590,6 +1856,24 @@ def get_dashboard_summary(db: Session):
         "category_counts": category_counts,
         "cost_trends": cost_trends,
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from . import crud, security
 from .database import Base, SessionLocal, engine
 from .jobs import ldap_sync_job, software_mail_job
-from .routers import assets, auth, branding, dashboard, ldap, software, users
+from .routers import assets, auth, branding, dashboard, ldap, orgs, software, users
 from .services import ldap_service, mail_service, schema_upgrade_service
 
 app = FastAPI(
@@ -25,6 +25,7 @@ app = FastAPI(
         {"name": "대시보드", "description": "자산 현황 요약"},
         {"name": "자산", "description": "자산 등록/조회/수정/이력/상태변경"},
         {"name": "소프트웨어", "description": "소프트웨어 라이선스 관리"},
+        {"name": "조직", "description": "조직 구조 관리"},
         {"name": "설정", "description": "환율 등 시스템 설정"},
         {"name": "LDAP", "description": "사내 AD/LDAP 연동"},
     ],
@@ -39,6 +40,7 @@ app.include_router(dashboard.router)
 app.include_router(assets.router)
 app.include_router(software.router)
 app.include_router(ldap.router)
+app.include_router(orgs.router)
 app.include_router(branding.router)
 
 

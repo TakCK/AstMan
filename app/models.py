@@ -1,7 +1,7 @@
 ﻿from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -18,6 +18,23 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class OrganizationUnit(Base):
+    __tablename__ = "organization_units"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
+    code: Mapped[str | None] = mapped_column(String(50), unique=True, nullable=True, index=True)
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("organization_units.id"), nullable=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
 
 class DirectoryUser(Base):
     __tablename__ = "directory_users"
@@ -27,6 +44,7 @@ class DirectoryUser(Base):
     display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     email: Mapped[str | None] = mapped_column(String(200), nullable=True)
     department: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    org_unit_id: Mapped[int | None] = mapped_column(ForeignKey("organization_units.id"), nullable=True, index=True)
     title: Mapped[str | None] = mapped_column(String(120), nullable=True)
     manager_dn: Mapped[str | None] = mapped_column(String(500), nullable=True)
     user_dn: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -54,6 +72,8 @@ class AppSetting(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
 class Asset(Base):
     __tablename__ = "assets"
 
@@ -67,6 +87,7 @@ class Asset(Base):
     owner: Mapped[str] = mapped_column(String(120), nullable=False, default="미지정")
     manager: Mapped[str] = mapped_column(String(120), nullable=False, default="미지정")
     department: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    org_unit_id: Mapped[int | None] = mapped_column(ForeignKey("organization_units.id"), nullable=True, index=True)
     location: Mapped[str] = mapped_column(String(120), nullable=False, default="미지정")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="대기")
     disposed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -84,7 +105,6 @@ class Asset(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
-
 
 
 class SoftwareLicense(Base):
@@ -114,6 +134,7 @@ class SoftwareLicense(Base):
         onupdate=func.now(),
     )
 
+
 class AssetHistory(Base):
     __tablename__ = "asset_history"
 
@@ -141,16 +162,3 @@ class SoftwareCostSnapshot(Base):
     monthly_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
     annual_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-
-
-
-
-
-
-
-
-
-
-

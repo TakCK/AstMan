@@ -64,6 +64,34 @@ def _normalize_department(value: str | None) -> str:
     return text or "미할당"
 
 
+def _resolve_team_bucket_key_for_report(org_unit_id: int | None, department: str | None) -> str:
+    if org_unit_id is not None:
+        try:
+            normalized_id = int(org_unit_id)
+        except (TypeError, ValueError):
+            normalized_id = 0
+        if normalized_id > 0:
+            return f"org:{normalized_id}"
+
+    return f"dept:{_normalize_department(department)}"
+
+
+def _resolve_team_name_for_report(org_unit_name: str | None, department: str | None) -> str:
+    # Phase 2 preparation: report display is fallback-compatible while grouping key can move to org_unit_id-first.
+    return _normalize_department(org_unit_name or department)
+
+
+def _resolve_team_identity_for_report(
+    org_unit_id: int | None,
+    org_unit_name: str | None,
+    department: str | None,
+) -> tuple[str, str]:
+    return (
+        _resolve_team_bucket_key_for_report(org_unit_id, department),
+        _resolve_team_name_for_report(org_unit_name, department),
+    )
+
+
 def _coerce_detail_item(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
@@ -79,23 +107,35 @@ def _build_directory_user_maps(db: Session) -> tuple[dict[str, str], dict[str, s
     department_map: dict[str, str] = {}
     display_name_map: dict[str, str] = {}
 
+    org_name_by_id: dict[int, str] = {}
+    for org_id, org_name in db.query(models.OrganizationUnit.id, models.OrganizationUnit.name).all():
+        key = int(org_id)
+        name = str(org_name or "").strip()
+        if not name:
+            continue
+        org_name_by_id[key] = name
+
     rows = db.query(
         models.DirectoryUser.username,
         models.DirectoryUser.display_name,
         models.DirectoryUser.department,
+        models.DirectoryUser.org_unit_id,
     ).all()
 
-    for username, display_name, department in rows:
+    for username, display_name, department, org_unit_id in rows:
         key = str(username or "").strip()
         if not key:
             continue
 
         display_text = str(display_name or "").strip() or key
         display_name_map[key] = display_text
-        department_map[key] = _normalize_department(department)
+
+        normalized_org_id = int(org_unit_id) if org_unit_id else None
+        org_name = org_name_by_id.get(normalized_org_id) if normalized_org_id else None
+        _team_key, team_name = _resolve_team_identity_for_report(normalized_org_id, org_name, department)
+        department_map[key] = team_name
 
     return department_map, display_name_map
-
 
 def _extract_license_assignees(
     license_row: models.SoftwareLicense,
@@ -956,4 +996,6 @@ def create_general_license_report_html(report_data: dict[str, Any]) -> str:
 </body>
 </html>
 """
+
+
 

@@ -1986,3 +1986,26 @@ tbody tr:hover {
 
 
 
+
+.org-integrity-details {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.org-integrity-details details {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 8px 10px;
+}
+
+.org-integrity-details summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #234766;
+}
+
+.org-integrity-details details[open] summary {
+  margin-bottom: 8px;
+}

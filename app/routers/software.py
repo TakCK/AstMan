@@ -1,35 +1,11 @@
 ﻿from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from .. import crud, models, schemas, security
+from .. import models, schemas, security
 from ..database import get_db
-from ..services import csv_import_service, mail_service
+from ..services import csv_import_service, mail_service, software_service
 
 router = APIRouter()
-
-SOFTWARE_LICENSE_KEY_SETTING_PREFIX = "software_license_key"
-
-
-def _software_license_key_setting_key(license_id: int) -> str:
-    return f"{SOFTWARE_LICENSE_KEY_SETTING_PREFIX}:{license_id}"
-
-
-def _get_software_license_or_404(db: Session, license_id: int):
-    db_row = crud.get_software_license(db, license_id)
-    if not db_row:
-        raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
-    return db_row
-
-
-def _build_software_license_key_response(db: Session, license_id: int) -> dict:
-    key = _software_license_key_setting_key(license_id)
-    payload = crud.get_app_setting(db, key, {})
-    license_key = str(payload.get("license_key") or "")
-    return {
-        "license_id": license_id,
-        "license_key": license_key,
-        "has_license_key": bool(license_key.strip()),
-    }
 
 
 @router.get("/settings/exchange-rate", response_model=schemas.ExchangeRateSettingResponse, summary="USD->KRW 환율 조회", tags=["설정"])
@@ -37,7 +13,7 @@ def get_exchange_rate_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    return crud.get_exchange_rate_setting(db)
+    return software_service.get_exchange_rate_setting(db)
 
 
 @router.put("/settings/exchange-rate", response_model=schemas.ExchangeRateSettingResponse, summary="USD->KRW 환율 저장", tags=["설정"])
@@ -46,7 +22,7 @@ def set_exchange_rate_setting(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    return crud.set_exchange_rate_setting(db, payload.usd_krw, payload.effective_date)
+    return software_service.set_exchange_rate_setting(db, payload)
 
 
 @router.get("/settings/mail/smtp", response_model=schemas.MailSmtpConfigResponse, summary="메일 SMTP 설정 조회", tags=["설정"])
@@ -169,7 +145,7 @@ def create_software_license(
     _: models.User = Depends(security.get_current_user),
 ):
     try:
-        return crud.create_software_license(db, payload)
+        return software_service.create_software_license(db, payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -185,22 +161,15 @@ def list_software_licenses(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    safe_limit = max(1, min(limit, 5000))
-    rows = crud.list_software_licenses(
+    return software_service.list_software_licenses(
         db,
-        skip=max(0, skip),
-        limit=safe_limit,
+        skip=skip,
+        limit=limit,
         q=q,
         expiring_days=expiring_days,
         expired_only=expired_only,
+        license_scope=license_scope,
     )
-
-    scope_raw = str(license_scope or "").strip()
-    if scope_raw and scope_raw.lower() not in {"all", "전체"}:
-        scope = crud.normalize_license_scope(scope_raw)
-        rows = [row for row in rows if crud.normalize_license_scope(getattr(row, "license_scope", None)) == scope]
-
-    return rows
 
 
 @router.get("/software-licenses/{license_id}/license-key", response_model=schemas.SoftwareLicenseKeyResponse, summary="소프트웨어 라이선스 키 조회", tags=["소프트웨어"])
@@ -209,8 +178,10 @@ def get_software_license_key(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    _get_software_license_or_404(db, license_id)
-    return _build_software_license_key_response(db, license_id)
+    response = software_service.get_software_license_key(db, license_id)
+    if not response:
+        raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
+    return response
 
 
 @router.put("/software-licenses/{license_id}/license-key", response_model=schemas.SoftwareLicenseKeyResponse, summary="소프트웨어 라이선스 키 저장", tags=["소프트웨어"])
@@ -220,11 +191,10 @@ def set_software_license_key(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_admin),
 ):
-    _get_software_license_or_404(db, license_id)
-    key = _software_license_key_setting_key(license_id)
-    license_key = str(payload.license_key or "")
-    crud.set_app_setting(db, key, {"license_key": license_key})
-    return _build_software_license_key_response(db, license_id)
+    response = software_service.set_software_license_key(db, license_id, payload)
+    if not response:
+        raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
+    return response
 
 
 @router.get("/software-licenses/{license_id}", response_model=schemas.SoftwareLicenseResponse, summary="소프트웨어 라이선스 상세", tags=["소프트웨어"])
@@ -233,7 +203,7 @@ def get_software_license(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    db_row = crud.get_software_license(db, license_id)
+    db_row = software_service.get_software_license(db, license_id)
     if not db_row:
         raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
     return db_row
@@ -246,17 +216,18 @@ def update_software_license(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    db_row = crud.get_software_license(db, license_id)
-    if not db_row:
-        raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
-
     if payload.model_dump(exclude_unset=True) == {}:
         raise HTTPException(status_code=400, detail="수정할 항목이 없습니다")
 
     try:
-        return crud.update_software_license(db, db_row, payload)
+        db_row = software_service.update_software_license(db, license_id, payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    if not db_row:
+        raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
+
+    return db_row
 
 
 @router.delete("/software-licenses/{license_id}", status_code=204, summary="소프트웨어 라이선스 삭제", tags=["소프트웨어"])
@@ -265,8 +236,6 @@ def delete_software_license(
     db: Session = Depends(get_db),
     _: models.User = Depends(security.get_current_user),
 ):
-    db_row = crud.get_software_license(db, license_id)
-    if not db_row:
+    deleted = software_service.delete_software_license(db, license_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="라이선스를 찾을 수 없습니다")
-
-    crud.delete_software_license(db, db_row)

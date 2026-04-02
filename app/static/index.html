@@ -470,6 +470,7 @@
             </select>
             <select id="filterCategory"><option value="">전체 카테고리</option></select>
             <input id="filterDepartment" placeholder="부서" />
+            <select id="filterOrgUnitId"><option value="">전체 조직</option></select>
             <button type="submit" class="primary-btn">검색</button>
           </form>
         </article>
@@ -495,6 +496,7 @@
                   <th>사용 분류</th>
                   <th>상태</th>
                   <th>사용자</th>
+                  <th>조직</th>
                   <th>부서</th>
                   <th>위치</th>
                   
@@ -594,6 +596,11 @@
               <label class="hardware-field-row full-width">
                 <span class="hardware-field-label">사용자</span>
                 <input id="addOwner" value="미지정" placeholder="ID 또는 이름으로 검색 (예: honggildong | 홍길동)" required autocomplete="off" />
+              </label>
+
+              <label class="hardware-field-row full-width">
+                <span class="hardware-field-label">조직</span>
+                <select id="addOrgUnitId"><option value="">조직 선택(선택)</option></select>
               </label>
 
               <label class="hardware-field-row full-width">
@@ -779,6 +786,61 @@
                 </table>
               </div>
             </article>
+            <article class="card" data-admin-only="1">
+              <h3>조직 관리</h3>
+              <input id="orgUnitEditId" type="hidden" />
+              <div class="category-setting-inline">
+                <label class="setting-field">
+                  <span>조직명</span>
+                  <input id="orgUnitName" placeholder="예: 인프라팀" />
+                </label>
+                <label class="setting-field">
+                  <span>조직 코드</span>
+                  <input id="orgUnitCode" placeholder="예: INFRA" />
+                </label>
+                <label class="setting-field">
+                  <span>상위 조직</span>
+                  <select id="orgUnitParentId"><option value="">없음(최상위)</option></select>
+                </label>
+                <label class="setting-field">
+                  <span>정렬 순서</span>
+                  <input id="orgUnitSortOrder" type="number" value="0" />
+                </label>
+              </div>
+              <div class="setting-actions row-actions">
+                <button id="saveOrgUnitBtn" type="button" class="primary-btn">조직 저장</button>
+                <button id="clearOrgUnitFormBtn" type="button" class="ghost-btn">입력 초기화</button>
+                <button id="reloadOrgUnitsBtn" type="button" class="ghost-btn">목록 새로고침</button>
+              </div>
+              <p class="inline-hint">비활성화는 영향도 미리보기 확인 후 가능합니다. 자동 재배치/자동 해제는 수행하지 않습니다.</p>
+              <div class="table-wrap setting-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>조직명</th>
+                      <th>코드</th>
+                      <th>상위 조직</th>
+                      <th>상태</th>
+                      <th>연결 사용자 수</th>
+                      <th>연결 자산 수</th>
+                      <th>관리</th>
+                    </tr>
+                  </thead>
+                  <tbody id="orgUnitTableBody"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="card" data-admin-only="1">
+              <h3>조직 데이터 정합 점검</h3>
+              <p class="muted">org 우선 / department fallback 전환을 위한 정합 점검 결과입니다.</p>
+              <div class="setting-actions row-actions">
+                <button id="runOrgIntegrityCheckBtn" type="button" class="primary-btn">정합 점검 실행</button>
+              </div>
+              <p id="orgIntegritySummary" class="inline-hint">아직 점검 결과가 없습니다.</p>
+              <div id="orgIntegrityDetails" class="org-integrity-details"></div>
+            </article>
+
           </div>
 
           <article class="card">
@@ -858,10 +920,12 @@
                 <input id="newUserUsername" placeholder="사용자 ID (예: honggildong)" required />
                 <input id="newUserDisplayName" placeholder="이름 (예: 홍길동)" />
                 <input id="newUserEmail" placeholder="이메일 (선택)" />
+                <select id="newUserOrgUnitId"><option value="">조직 선택(선택)</option></select>
                 <button type="submit" class="primary-btn">사용자 추가</button>
               </form>
               <form id="userFilterForm" class="filter-form user-manage-form">
-                <input id="userSearchQ" placeholder="ID/이름 검색" />
+                <input id="userSearchQ" placeholder="ID/이름/조직 검색" />
+                <select id="userOrgFilter"><option value="">전체 조직</option></select>
                 <button type="submit" class="ghost-btn">검색</button>
               </form>
               <div class="table-wrap">
@@ -871,6 +935,7 @@
                       <th>ID</th>
                       <th>이름</th>
                       <th>이메일</th>
+                      <th>조직</th>
                       <th>부서</th>
                       <th>상태</th>
                       <th>출처</th>
@@ -922,7 +987,8 @@
               </div>
               <p class="muted">비활성 사용자만 별도로 조회합니다. 활성 전환 시 사용자 탭에서 바로 확인할 수 있습니다.</p>
               <form id="inactiveUserFilterForm" class="filter-form user-manage-form">
-                <input id="inactiveUserSearchQ" placeholder="ID/이름 검색" />
+                <input id="inactiveUserSearchQ" placeholder="ID/이름/조직 검색" />
+                <select id="inactiveUserOrgFilter"><option value="">전체 조직</option></select>
                 <button type="submit" class="ghost-btn">검색</button>
               </form>
               <div class="table-wrap">
@@ -932,6 +998,7 @@
                       <th>ID</th>
                       <th>이름</th>
                       <th>이메일</th>
+                      <th>조직</th>
                       <th>부서</th>
                       <th>상태</th>
                       <th>출처</th>
@@ -1402,6 +1469,11 @@
         </label>
 
         <label class="field-block">
+          <span class="field-head"><span class="field-title">조직</span><span class="field-hint">조직 단위(우선 표시)</span></span>
+          <select id="editOrgUnitId"><option value="">조직 선택(선택)</option></select>
+        </label>
+
+        <label class="field-block">
           <span class="field-head"><span class="field-title">부서</span><span class="field-hint">사용 조직</span></span>
           <input id="editDepartment" placeholder="예: 개발팀" />
         </label>
@@ -1523,6 +1595,8 @@
   <script src="/static/app.js?v=20260401-reportfmt2"></script>
 </body>
 </html>
+
+
 
 
 

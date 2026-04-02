@@ -703,6 +703,7 @@ const state = {
   softwareLicenseKeys: {},
   currentAssetId: null,
   directoryUsers: [],
+  orgUnits: [],
   lastLdapSearchUsers: [],
   managedUsers: [],
   managedAdmins: [],
@@ -735,6 +736,7 @@ const state = {
   dashboardSoftwareCostSummary: null,
   settingsSubtab: "hardware",
   settingsAccountsSubtab: "users",
+  orgIntegrity: null,
   selectedAssetIds: new Set(),
   userDeactivation: {
     targetUserId: 0,
@@ -810,6 +812,7 @@ const fieldLabelMap = {
   owner: "사용자",
   manager: "담당자",
   department: "부서",
+  org_unit_id: "조직",
   location: "위치",
   manufacturer: "제조사",
   model_name: "모델명",
@@ -887,6 +890,9 @@ const orgChartBoard = document.getElementById("orgChartBoard");
 const orgChartSummary = document.getElementById("orgChartSummary");
 const orgChartShowInactiveInput = document.getElementById("orgChartShowInactive");
 const orgChartToggleDeptExpandBtn = document.getElementById("orgChartToggleDeptExpandBtn");
+const orgUnitTableBody = document.getElementById("orgUnitTableBody");
+const orgIntegritySummary = document.getElementById("orgIntegritySummary");
+const orgIntegrityDetails = document.getElementById("orgIntegrityDetails");
 const ownerAssignModal = document.getElementById("ownerAssignModal");
 const ownerAssignInput = document.getElementById("ownerAssignInput");
 const userDeactivateModal = document.getElementById("userDeactivateModal");
@@ -1011,25 +1017,350 @@ function getOwnerDisplayName(username) {
   return displayName || key;
 }
 
+function parseOrgUnitId(value) {
+  const id = Number(value || 0);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function getOrgUnitNameById(orgUnitId) {
+  const id = parseOrgUnitId(orgUnitId);
+  if (!id) return "";
+  const row = (state.orgUnits || []).find((item) => Number(item?.id || 0) === id);
+  return String(row?.name || "").trim();
+}
+
+function getOrgDisplayName(orgUnitName, department) {
+  const orgText = String(orgUnitName || "").trim();
+  if (orgText) return orgText;
+  const deptText = String(department || "").trim();
+  return deptText;
+}
+
+function getOwnerOrgUnitId(username) {
+  const found = findDirectoryUserByUsername(username);
+  return parseOrgUnitId(found?.org_unit_id);
+}
+
 function getOwnerDepartment(username) {
   const found = findDirectoryUserByUsername(username);
-  const department = String(found?.department || "").trim();
-  return department || "";
+  return getOrgDisplayName(found?.org_unit_name, found?.department) || "";
+}
+
+function buildOrgUnitOptionsHtml(selectedValue = "", emptyLabel = "조직 선택(선택)") {
+  const selectedId = parseOrgUnitId(selectedValue);
+  const activeRows = (state.orgUnits || []).filter((row) => Boolean(row?.is_active));
+  const selectedRow = selectedId
+    ? (state.orgUnits || []).find((row) => Number(row?.id || 0) === selectedId)
+    : null;
+
+  const rows = [...activeRows];
+  if (selectedRow && !rows.some((row) => Number(row?.id || 0) === selectedId)) {
+    rows.push(selectedRow);
+  }
+
+  rows.sort((a, b) => {
+    const ao = Number(a?.sort_order || 0);
+    const bo = Number(b?.sort_order || 0);
+    if (ao !== bo) return ao - bo;
+    return String(a?.name || "").localeCompare(String(b?.name || ""), "ko");
+  });
+
+  const options = [`<option value="">${escapeHtml(emptyLabel)}</option>`];
+  rows.forEach((row) => {
+    const id = Number(row?.id || 0);
+    if (!id) return;
+    const name = String(row?.name || "").trim();
+    if (!name) return;
+    const isSelected = selectedId === id ? " selected" : "";
+    const inactiveLabel = row?.is_active ? "" : " (비활성)";
+    options.push(`<option value="${id}"${isSelected}>${escapeHtml(`${name}${inactiveLabel}`)}</option>`);
+  });
+
+  return options.join("");
+}
+
+function syncOrgUnitSelects() {
+  const targetIds = [
+    "addOrgUnitId",
+    "editOrgUnitId",
+    "newUserOrgUnitId",
+    "filterOrgUnitId",
+    "userOrgFilter",
+    "inactiveUserOrgFilter",
+  ];
+
+  targetIds.forEach((id) => {
+    const select = document.getElementById(id);
+    if (!select) return;
+    const prev = select.value;
+    const emptyLabel = id.includes("Filter") ? "전체 조직" : "조직 선택(선택)";
+    select.innerHTML = buildOrgUnitOptionsHtml(prev, emptyLabel);
+    if (prev) {
+      select.value = prev;
+    }
+  });
+
+  renderOrgUnitParentSelect();
+  renderOrgUnitTable();
+}
+
+function getOrgUnitById(orgUnitId) {
+  const id = parseOrgUnitId(orgUnitId);
+  if (!id) return null;
+  return (state.orgUnits || []).find((row) => Number(row?.id || 0) === id) || null;
+}
+
+function sortedOrgUnits(rows = state.orgUnits || []) {
+  return [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+    const ao = Number(a?.sort_order || 0);
+    const bo = Number(b?.sort_order || 0);
+    if (ao !== bo) return ao - bo;
+    return String(a?.name || "").localeCompare(String(b?.name || ""), "ko");
+  });
+}
+
+function buildOrgUnitParentOptions(selectedValue = "", currentOrgId = null) {
+  const selectedId = parseOrgUnitId(selectedValue);
+  const currentId = parseOrgUnitId(currentOrgId);
+  const options = ['<option value="">없음(최상위)</option>'];
+
+  sortedOrgUnits().forEach((row) => {
+    const id = Number(row?.id || 0);
+    if (!id) return;
+    if (currentId && id === currentId) return;
+
+    const name = String(row?.name || "").trim();
+    if (!name) return;
+
+    const inactiveLabel = row?.is_active ? "" : " (비활성)";
+    const selectedAttr = selectedId === id ? " selected" : "";
+    options.push(`<option value="${id}"${selectedAttr}>${escapeHtml(`${name}${inactiveLabel}`)}</option>`);
+  });
+
+  return options.join("");
+}
+
+function renderOrgUnitParentSelect(selectedValue = "", currentOrgId = null) {
+  const select = document.getElementById("orgUnitParentId");
+  if (!select) return;
+
+  const prev = String(selectedValue || select.value || "").trim();
+  select.innerHTML = buildOrgUnitParentOptions(prev, currentOrgId);
+  if (prev) {
+    select.value = prev;
+  }
+}
+
+function resetOrgUnitForm() {
+  const editId = document.getElementById("orgUnitEditId");
+  const name = document.getElementById("orgUnitName");
+  const code = document.getElementById("orgUnitCode");
+  const sortOrder = document.getElementById("orgUnitSortOrder");
+
+  if (editId) editId.value = "";
+  if (name) name.value = "";
+  if (code) code.value = "";
+  if (sortOrder) sortOrder.value = "0";
+  renderOrgUnitParentSelect("", null);
+}
+
+function fillOrgUnitForm(row) {
+  if (!row) return;
+
+  const editId = document.getElementById("orgUnitEditId");
+  const name = document.getElementById("orgUnitName");
+  const code = document.getElementById("orgUnitCode");
+  const sortOrder = document.getElementById("orgUnitSortOrder");
+
+  if (editId) editId.value = String(row.id || "");
+  if (name) name.value = String(row.name || "");
+  if (code) code.value = String(row.code || "");
+  if (sortOrder) sortOrder.value = String(Number(row.sort_order || 0));
+
+  renderOrgUnitParentSelect(String(row.parent_id || ""), Number(row.id || 0));
+}
+
+function renderOrgUnitTable() {
+  if (!orgUnitTableBody) return;
+
+  const rows = sortedOrgUnits();
+  if (!rows.length) {
+    orgUnitTableBody.innerHTML = "<tr><td colspan=\"7\">등록된 조직이 없습니다.</td></tr>";
+    return;
+  }
+
+  orgUnitTableBody.innerHTML = rows
+    .map((row) => {
+      const orgId = Number(row?.id || 0);
+      const parentName = String(row?.parent_name || "").trim() || getOrgUnitNameById(row?.parent_id) || "-";
+      const statusText = row?.is_active ? "활성" : "비활성";
+      const activeUserCount = Number(row?.active_user_count || 0);
+      const activeAssetCount = Number(row?.active_asset_count || 0);
+      const deactivateDisabled = row?.is_active ? "" : " disabled";
+
+      return `
+        <tr data-id="${orgId}">
+          <td>${escapeHtml(row?.name || "-")}</td>
+          <td>${escapeHtml(row?.code || "-")}</td>
+          <td>${escapeHtml(parentName)}</td>
+          <td>${escapeHtml(statusText)}</td>
+          <td>${activeUserCount.toLocaleString("ko-KR")}</td>
+          <td>${activeAssetCount.toLocaleString("ko-KR")}</td>
+          <td>
+            <div class="table-actions">
+              <button type="button" class="mini-btn" data-action="edit-org" data-id="${orgId}">불러오기</button>
+              <button type="button" class="mini-btn danger" data-action="deactivate-org" data-id="${orgId}"${deactivateDisabled}>비활성화</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function renderOrgIntegrityReport(report = state.orgIntegrity) {
+  if (!orgIntegritySummary || !orgIntegrityDetails) return;
+
+  if (!report || typeof report !== "object") {
+    orgIntegritySummary.textContent = "아직 점검 결과가 없습니다.";
+    orgIntegrityDetails.innerHTML = "";
+    return;
+  }
+
+  const summary = report.summary || {};
+  const missingCount = Number(summary.missing_org_with_department || 0);
+  const mismatchCount = Number(summary.org_department_mismatch || 0);
+  const ldapUnmappedCount = Number(summary.ldap_department_unmapped || 0);
+
+  orgIntegritySummary.textContent = `미매핑 ${missingCount}건 / 불일치 ${mismatchCount}건 / LDAP 자동매핑 실패 ${ldapUnmappedCount}건`;
+
+  const missingUsers = Array.isArray(report.missing_org_with_department?.directory_users)
+    ? report.missing_org_with_department.directory_users
+    : [];
+  const missingAssets = Array.isArray(report.missing_org_with_department?.assets)
+    ? report.missing_org_with_department.assets
+    : [];
+  const mismatchUsers = Array.isArray(report.org_department_mismatch?.directory_users)
+    ? report.org_department_mismatch.directory_users
+    : [];
+  const mismatchAssets = Array.isArray(report.org_department_mismatch?.assets)
+    ? report.org_department_mismatch.assets
+    : [];
+  const ldapUnmapped = Array.isArray(report.ldap_department_unmapped) ? report.ldap_department_unmapped : [];
+
+  const renderRows = (rows, formatter, emptyCols = 4) => {
+    if (!rows.length) {
+      return `<tr><td colspan="${emptyCols}" class="muted">데이터가 없습니다.</td></tr>`;
+    }
+    return rows.map(formatter).join("");
+  };
+
+  orgIntegrityDetails.innerHTML = `
+    <details>
+      <summary>org_unit_id 없음 + department 있음 (${missingUsers.length + missingAssets.length}건)</summary>
+      <div class="table-wrap setting-table-wrap">
+        <table>
+          <thead><tr><th>구분</th><th>ID</th><th>이름/자산명</th><th>department</th></tr></thead>
+          <tbody>
+            ${renderRows(missingUsers, (row) => `<tr><td>사용자</td><td>${escapeHtml(row.username || "-")}</td><td>${escapeHtml(row.display_name || "-")}</td><td>${escapeHtml(row.department || "-")}</td></tr>`)}
+            ${renderRows(missingAssets, (row) => `<tr><td>자산</td><td>${escapeHtml(row.asset_code || String(row.id || "-"))}</td><td>${escapeHtml(row.name || "-")}</td><td>${escapeHtml(row.department || "-")}</td></tr>`)}
+          </tbody>
+        </table>
+      </div>
+    </details>
+
+    <details>
+      <summary>org_unit_id 있음 + department 불일치 (${mismatchUsers.length + mismatchAssets.length}건)</summary>
+      <div class="table-wrap setting-table-wrap">
+        <table>
+          <thead><tr><th>구분</th><th>ID</th><th>이름/자산명</th><th>department</th><th>org</th></tr></thead>
+          <tbody>
+            ${renderRows(mismatchUsers, (row) => `<tr><td>사용자</td><td>${escapeHtml(row.username || "-")}</td><td>${escapeHtml(row.display_name || "-")}</td><td>${escapeHtml(row.department || "-")}</td><td>${escapeHtml(row.org_unit_name || "-")}</td></tr>`, 5)}
+            ${renderRows(mismatchAssets, (row) => `<tr><td>자산</td><td>${escapeHtml(row.asset_code || String(row.id || "-"))}</td><td>${escapeHtml(row.name || "-")}</td><td>${escapeHtml(row.department || "-")}</td><td>${escapeHtml(row.org_unit_name || "-")}</td></tr>`, 5)}
+          </tbody>
+        </table>
+      </div>
+    </details>
+
+    <details>
+      <summary>LDAP department 있음 + org 자동매핑 실패 (${ldapUnmapped.length}건)</summary>
+      <div class="table-wrap setting-table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>이름</th><th>department</th><th>source</th></tr></thead>
+          <tbody>
+            ${renderRows(ldapUnmapped, (row) => `<tr><td>${escapeHtml(row.username || "-")}</td><td>${escapeHtml(row.display_name || "-")}</td><td>${escapeHtml(row.department || "-")}</td><td>${escapeHtml(row.source || "-")}</td></tr>`)}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  `;
+}
+
+async function loadOrgIntegrityCheck() {
+  if (!isAdminUser()) return;
+  const report = await api("/org-units/integrity-check");
+  state.orgIntegrity = report;
+  renderOrgIntegrityReport(report);
+}
+
+function buildOrgDeactivationPreviewMessage(preview) {
+  const rows = [
+    `하위 활성 조직: ${Number(preview?.child_count || 0)}개`,
+    `연결 활성 사용자: ${Number(preview?.active_user_count || 0)}명`,
+    `연결 미폐기 자산: ${Number(preview?.active_asset_count || 0)}개`,
+  ];
+  if (Array.isArray(preview?.blocking_reasons) && preview.blocking_reasons.length) {
+    rows.push("", "차단 사유:", ...preview.blocking_reasons.map((reason) => `- ${reason}`));
+  }
+  return rows.join("\n");
+}
+
+async function handleOrgUnitDeactivation(orgUnitId) {
+  const orgId = Number(orgUnitId || 0);
+  if (!orgId) return;
+
+  const preview = await api(`/org-units/${orgId}/deactivation-preview`);
+  const previewMessage = buildOrgDeactivationPreviewMessage(preview);
+
+  if (Array.isArray(preview?.blocking_reasons) && preview.blocking_reasons.length) {
+    confirm(`조직 비활성화를 진행할 수 없습니다.\n\n${previewMessage}`);
+    showToast(preview.blocking_reasons[0]);
+    return;
+  }
+
+  const confirmed = confirm(`조직 "${preview.org_unit_name}" 을(를) 비활성화할까요?\n\n${previewMessage}`);
+  if (!confirmed) return;
+
+  await api(`/org-units/${orgId}/deactivate`, { method: "POST" });
+  showToast("조직을 비활성화했습니다.");
+  await loadOrgUnits(true);
+  await loadOrgIntegrityCheck();
+  resetOrgUnitForm();
 }
 
 function syncDepartmentByOwner(prefix, options = {}) {
   const { preserveWhenUnknown = true } = options;
   const ownerInput = document.getElementById(`${prefix}Owner`);
   const departmentInput = document.getElementById(`${prefix}Department`);
+  const orgSelect = document.getElementById(`${prefix}OrgUnitId`);
   if (!ownerInput || !departmentInput) return;
 
   const ownerKey = extractLookupUsername(ownerInput.value).trim();
   if (!ownerKey || ownerKey === "미지정") {
     departmentInput.value = "";
+    if (orgSelect) orgSelect.value = "";
     return;
   }
 
   const department = getOwnerDepartment(ownerKey);
+  const ownerOrgUnitId = getOwnerOrgUnitId(ownerKey);
+
+  if (ownerOrgUnitId && orgSelect) {
+    orgSelect.value = String(ownerOrgUnitId);
+  } else if (orgSelect && !preserveWhenUnknown) {
+    orgSelect.value = "";
+  }
+
   if (department) {
     departmentInput.value = department;
     return;
@@ -1039,7 +1370,6 @@ function syncDepartmentByOwner(prefix, options = {}) {
     departmentInput.value = "";
   }
 }
-
 function bindOwnerDepartmentSync(prefix) {
   const ownerInput = document.getElementById(`${prefix}Owner`);
   if (!ownerInput || ownerInput.dataset.departmentSyncBound === "1") return;
@@ -1312,36 +1642,42 @@ function renderUsersTable(view = "user") {
 
   const rows = (state.managedUsers || []).filter((row) => (isInactiveView ? !row.is_active : row.is_active));
   if (!rows.length) {
-    tableBody.innerHTML = `<tr><td colspan="7">${isInactiveView ? "비활성 사용자" : "활성 사용자"}가 없습니다.</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="8">${isInactiveView ? "비활성 사용자" : "활성 사용자"}가 없습니다.</td></tr>`;
     return;
   }
 
   tableBody.innerHTML = rows
-    .map(
-      (row) => `
+    .map((row) => {
+      const orgDisplay = getOrgDisplayName(row?.org_unit_name, row?.department) || "-";
+      const orgOptions = buildOrgUnitOptionsHtml(String(row?.org_unit_id || ""), "조직 선택(선택)");
+      return `
         <tr>
           <td>${escapeHtml(row.username)}</td>
           <td>${escapeHtml(row.display_name || "-")}</td>
           <td>${escapeHtml(row.email || "-")}</td>
+          <td>${escapeHtml(orgDisplay)}</td>
           <td>${escapeHtml(row.department || "-")}</td>
           <td>${row.is_active ? "활성" : "비활성"}</td>
           <td>${escapeHtml(row.source || "manual")}</td>
           <td>
-            <button type="button" class="mini-btn user-toggle-btn" data-id="${row.id}" data-role="user" data-active="${row.is_active ? "1" : "0"}">
-              ${row.is_active ? "비활성" : "활성"} 전환
-            </button>
+            <div class="inline-edit">
+              <select class="user-org-inline" data-id="${row.id}">${orgOptions}</select>
+              <button type="button" class="mini-btn user-org-save-btn" data-id="${row.id}">조직저장</button>
+              <button type="button" class="mini-btn user-toggle-btn" data-id="${row.id}" data-role="user" data-active="${row.is_active ? "1" : "0"}">
+                ${row.is_active ? "비활성" : "활성"} 전환
+              </button>
+            </div>
           </td>
         </tr>
-      `,
-    )
+      `;
+    })
     .join("");
 }
 
 function getOrgChartDepartmentName(row) {
-  const department = String(row?.department || "").trim();
+  const department = getOrgDisplayName(row?.org_unit_name, row?.department);
   return department || "\uBBF8\uC9C0\uC815";
 }
-
 function updateOrgChartDeptToggleButton() {
   if (!orgChartToggleDeptExpandBtn) return;
   orgChartToggleDeptExpandBtn.textContent = state.orgChartDeptExpanded ? "\uBD80\uC11C \uC804\uCCB4 \uC811\uAE30" : "\uBD80\uC11C \uC804\uCCB4 \uD3BC\uCE68";
@@ -1531,14 +1867,14 @@ function renderOrgChart(rows = state.managedUsers || []) {
   `;
 }
 
-async function loadManagedUsers(role, q = "") {
+async function loadManagedUsers(role, q = "", orgUnitId = "") {
   const targetRole = role === "admin" ? "admin" : "user";
 
   if (targetRole === "admin") {
     const params = new URLSearchParams();
     params.set("role", "admin");
     params.set("limit", "500");
-    if (q.trim()) params.set("q", q.trim());
+    if (String(q || "").trim()) params.set("q", String(q || "").trim());
 
     const rows = await api(`/users?${params.toString()}`);
     state.managedAdmins = rows;
@@ -1550,7 +1886,12 @@ async function loadManagedUsers(role, q = "") {
   const params = new URLSearchParams();
   params.set("limit", "5000");
   params.set("include_inactive", "true");
-  if (q.trim()) params.set("q", q.trim());
+  if (String(q || "").trim()) params.set("q", String(q || "").trim());
+
+  const normalizedOrgId = parseOrgUnitId(orgUnitId);
+  if (normalizedOrgId) {
+    params.set("org_unit_id", String(normalizedOrgId));
+  }
 
   const rows = await api(`/directory-users?${params.toString()}`);
   state.managedUsers = rows;
@@ -1559,10 +1900,15 @@ async function loadManagedUsers(role, q = "") {
   renderOrgChart(rows);
 }
 
-async function loadDirectoryUsers(q = "") {
+async function loadDirectoryUsers(q = "", orgUnitId = "") {
   const params = new URLSearchParams();
   params.set("limit", "5000");
-  if (q.trim()) params.set("q", q.trim());
+  if (String(q || "").trim()) params.set("q", String(q || "").trim());
+
+  const normalizedOrgId = parseOrgUnitId(orgUnitId);
+  if (normalizedOrgId) {
+    params.set("org_unit_id", String(normalizedOrgId));
+  }
 
   state.directoryUsers = await api(`/directory-users?${params.toString()}`);
   renderDirectoryUserDatalist();
@@ -1570,8 +1916,6 @@ async function loadDirectoryUsers(q = "") {
   syncDepartmentByOwner("edit", { preserveWhenUnknown: true });
   if (state.assets.length) renderAssetRows();
 }
-
-
 function renderLdapScheduleInfo() {
   if (!ldapScheduleInfo) return;
 
@@ -1636,8 +1980,18 @@ async function loadLdapSchedule() {
   renderLdapScheduleInfo();
 }
 
+async function loadOrgUnits(includeInactive = true) {
+  const params = new URLSearchParams();
+  params.set("include_inactive", includeInactive ? "true" : "false");
+  const rows = await api(`/org-units?${params.toString()}`);
+  state.orgUnits = Array.isArray(rows) ? rows : [];
+  syncOrgUnitSelects();
+  renderOrgUnitParentSelect();
+  renderOrgUnitTable();
+}
+
 async function refreshUserDataSources() {
-  await loadDirectoryUsers();
+  await Promise.all([loadOrgUnits(true), loadDirectoryUsers()]);
   if (isAdminUser()) {
     await Promise.all([loadManagedUsers("user"), loadManagedUsers("admin")]);
   }
@@ -1760,6 +2114,16 @@ async function loadSettingsSubtabData(subtabName = "hardware") {
   if (!state.token) return;
   const target = String(subtabName || "hardware");
 
+  if (target === "hardware") {
+    await loadOrgUnits(true);
+    if (isAdminUser()) {
+      await loadOrgIntegrityCheck();
+    } else {
+      renderOrgIntegrityReport(null);
+    }
+    return;
+  }
+
   if (target === "software") {
     await loadExchangeRateSetting();
     return;
@@ -1767,15 +2131,16 @@ async function loadSettingsSubtabData(subtabName = "hardware") {
 
   if (target === "accounts") {
     if (!isAdminUser()) return;
+    await loadOrgUnits(true);
     const accountSubtab = String(state.settingsAccountsSubtab || "users");
     if (accountSubtab === "admins") {
       await loadManagedUsers("admin", document.getElementById("adminSearchQ")?.value || "");
     } else if (accountSubtab === "users-inactive") {
-      await loadManagedUsers("user", document.getElementById("inactiveUserSearchQ")?.value || "");
+      await loadManagedUsers("user", document.getElementById("inactiveUserSearchQ")?.value || "", document.getElementById("inactiveUserOrgFilter")?.value || "");
     } else if (accountSubtab === "orgchart") {
       await loadManagedUsers("user", document.getElementById("orgChartSearchQ")?.value || "");
     } else {
-      await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "");
+      await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "", document.getElementById("userOrgFilter")?.value || "");
     }
     return;
   }
@@ -1877,15 +2242,24 @@ function closeUserMailPreviewModal() {
   userMailPreviewModal.classList.add("hidden");
 }
 
-function getCurrentUserSearchQuery() {
+function getCurrentUserFilter() {
   const subtab = String(state.settingsAccountsSubtab || "users");
   if (subtab === "users-inactive") {
-    return document.getElementById("inactiveUserSearchQ")?.value || "";
+    return {
+      q: document.getElementById("inactiveUserSearchQ")?.value || "",
+      orgUnitId: document.getElementById("inactiveUserOrgFilter")?.value || "",
+    };
   }
   if (subtab === "orgchart") {
-    return document.getElementById("orgChartSearchQ")?.value || "";
+    return {
+      q: document.getElementById("orgChartSearchQ")?.value || "",
+      orgUnitId: "",
+    };
   }
-  return document.getElementById("userSearchQ")?.value || "";
+  return {
+    q: document.getElementById("userSearchQ")?.value || "",
+    orgUnitId: document.getElementById("userOrgFilter")?.value || "",
+  };
 }
 
 function resetUserDeactivationState() {
@@ -2857,11 +3231,13 @@ async function applyDashboardDrilldown(filter) {
   const filterUsageType = document.getElementById("filterUsageType");
   const filterCategory = document.getElementById("filterCategory");
   const filterDepartment = document.getElementById("filterDepartment");
+  const filterOrgUnitId = document.getElementById("filterOrgUnitId");
 
   state.dashboardDrilldown = filter.mode || null;
 
   filterQ.value = "";
   filterDepartment.value = "";
+  if (filterOrgUnitId) filterOrgUnitId.value = "";
   filterStatus.value = filter.status || "";
   filterUsageType.value = filter.usageType || "";
 
@@ -3178,7 +3554,7 @@ async function openSelectedAssetsLabelPreview() {
 
 function renderAssetRows() {
   if (!state.assets.length) {
-    assetTableBody.innerHTML = '<tr><td colspan="11">조건에 맞는 자산이 없습니다.</td></tr>';
+    assetTableBody.innerHTML = '<tr><td colspan="12">조건에 맞는 자산이 없습니다.</td></tr>';
     syncAssetSelectionControls();
     return;
   }
@@ -3189,6 +3565,7 @@ function renderAssetRows() {
       const usageType = asset.usage_type || "기타장비";
       const ownerId = asset.owner || "미지정";
       const ownerDisplay = getOwnerDisplayName(ownerId);
+      const orgDisplay = getOrgDisplayName(asset.org_unit_name, asset.department) || "-";
       const category = asset.category || "";
       const assetId = Number(asset.id || 0);
       const checked = state.selectedAssetIds.has(assetId) ? "checked" : "";
@@ -3202,6 +3579,7 @@ function renderAssetRows() {
         <td>${escapeHtml(usageType)}</td>
         <td><span class="status-tag status-${escapeHtml(status)}">${escapeHtml(status)}</span></td>
         <td>${escapeHtml(ownerDisplay)}</td>
+        <td>${escapeHtml(orgDisplay)}</td>
         <td>${escapeHtml(asset.department || "-")}</td>
         <td>${escapeHtml(asset.location || "-")}</td>
         <td>
@@ -4389,12 +4767,14 @@ function buildAssetQueryParams() {
   const usageType = document.getElementById("filterUsageType").value;
   const category = document.getElementById("filterCategory").value;
   const department = document.getElementById("filterDepartment").value.trim();
+  const orgUnitId = parseOrgUnitId(document.getElementById("filterOrgUnitId")?.value || "");
 
   if (q) params.set("q", q);
   if (status) params.set("status", status);
   if (usageType) params.set("usage_type", usageType);
   if (category) params.set("category", category);
   if (department) params.set("department", department);
+  if (orgUnitId) params.set("org_unit_id", String(orgUnitId));
 
   params.set("exclude_disposed", "true");
 
@@ -4954,14 +5334,22 @@ function readCommonForm(prefix) {
 
   const owner = extractLookupUsername(pick("Owner")) || "미지정";
   const manager = extractLookupUsername(pick("Manager")) || "미지정";
-  const autoDepartment = owner === "미지정" ? null : getOwnerDepartment(owner) || trimOrNull(pick("Department"));
+  const selectedOrgUnitId = parseOrgUnitId(pick("OrgUnitId"));
+  const ownerOrgUnitId = owner === "미지정" ? null : getOwnerOrgUnitId(owner);
+  const resolvedOrgUnitId = ownerOrgUnitId || selectedOrgUnitId;
+  const ownerDepartment = owner === "미지정" ? "" : getOwnerDepartment(owner);
+  const orgDepartment = resolvedOrgUnitId ? getOrgUnitNameById(resolvedOrgUnitId) : "";
+  const manualDepartment = trimOrNull(pick("Department"));
+  const resolvedDepartment = ownerDepartment || orgDepartment || manualDepartment;
+
   const payload = {
     name: pick("Name").trim(),
     usage_type: usageType,
     status: pick("Status"),
     owner,
     manager,
-    department: autoDepartment,
+    org_unit_id: resolvedOrgUnitId,
+    department: resolvedDepartment,
     location: pick("Location").trim() || "미지정",
     manufacturer: trimOrNull(pick("Manufacturer")),
     model_name: trimOrNull(pick("ModelName")),
@@ -5130,6 +5518,9 @@ function applySettingInputs() {
   syncFilterCategorySelect();
   renderCategorySettingTable();
   setCategorySettingInputs();
+  resetOrgUnitForm();
+  renderOrgUnitTable();
+  renderOrgIntegrityReport(state.orgIntegrity);
   updateCodePreview();
   applyLdapInputs();
   applyBrandingInputs();
@@ -5157,6 +5548,7 @@ function resetAddForm() {
   document.getElementById("addAssetForm").reset();
   setManagerInputValue("addManager", state.settings.defaultManager);
   setOwnerInputValue("addOwner", state.settings.defaultOwner);
+  setFieldValue("addOrgUnitId", "");
   syncDepartmentByOwner("add", { preserveWhenUnknown: false });
   document.getElementById("addStatus").value = "대기";
   document.getElementById("addUsageType").value = "주장비";
@@ -5256,6 +5648,7 @@ async function openEditModal(assetId) {
   setFieldValue("editStatus", asset.status || "대기");
   setManagerInputValue("editManager", asset.manager || state.settings.defaultManager);
   setOwnerInputValue("editOwner", asset.owner || state.settings.defaultOwner);
+  setFieldValue("editOrgUnitId", asset.org_unit_id || "");
   setFieldValue("editDepartment", asset.department);
   syncDepartmentByOwner("edit", { preserveWhenUnknown: true });
   setFieldValue("editLocation", asset.location);
@@ -5354,6 +5747,7 @@ document.getElementById("logoutBtn").addEventListener("click", () => {
   state.user = null;
   state.ldapSession.bindPassword = "";
   state.directoryUsers = [];
+  state.orgUnits = [];
   state.managedUsers = [];
   state.managedAdmins = [];
   state.selectedAssetIds = new Set();
@@ -5361,6 +5755,7 @@ document.getElementById("logoutBtn").addEventListener("click", () => {
   updateAuthView();
   applyRoleTabVisibility();
   renderDirectoryUserDatalist();
+  syncOrgUnitSelects();
   renderAdminUserDatalist();
   renderUsersTable("user");
   renderUsersTable("admin");
@@ -6123,7 +6518,7 @@ document.getElementById("ldapImportSearchResultBtn")?.addEventListener("click", 
       body: JSON.stringify({ users: state.lastLdapSearchUsers }),
     });
 
-    await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "");
+    await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "", document.getElementById("userOrgFilter")?.value || "");
     await loadDirectoryUsers();
     showToast(`사용자 탭 반영 완료: ${result.result?.total_incoming ?? 0}건`);
   } catch (error) {
@@ -6144,7 +6539,7 @@ const reloadOrgChartBtn = document.getElementById("reloadOrgChartBtn");
 
 reloadUsersBtn?.addEventListener("click", async () => {
   try {
-    await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "");
+    await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "", document.getElementById("userOrgFilter")?.value || "");
     await loadDirectoryUsers();
     showToast("사용자 목록을 새로고침했습니다.");
   } catch (error) {
@@ -6154,7 +6549,7 @@ reloadUsersBtn?.addEventListener("click", async () => {
 
 reloadInactiveUsersBtn?.addEventListener("click", async () => {
   try {
-    await loadManagedUsers("user", document.getElementById("inactiveUserSearchQ")?.value || "");
+    await loadManagedUsers("user", document.getElementById("inactiveUserSearchQ")?.value || "", document.getElementById("inactiveUserOrgFilter")?.value || "");
     await loadDirectoryUsers();
     showToast("비활성 사용자 목록을 새로고침했습니다.");
   } catch (error) {
@@ -6196,7 +6591,7 @@ orgChartToggleDeptExpandBtn?.addEventListener("click", () => {
 document.getElementById("userFilterForm")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "");
+    await loadManagedUsers("user", document.getElementById("userSearchQ")?.value || "", document.getElementById("userOrgFilter")?.value || "");
   } catch (error) {
     showToast(error.message);
   }
@@ -6205,7 +6600,7 @@ document.getElementById("userFilterForm")?.addEventListener("submit", async (eve
 document.getElementById("inactiveUserFilterForm")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    await loadManagedUsers("user", document.getElementById("inactiveUserSearchQ")?.value || "");
+    await loadManagedUsers("user", document.getElementById("inactiveUserSearchQ")?.value || "", document.getElementById("inactiveUserOrgFilter")?.value || "");
   } catch (error) {
     showToast(error.message);
   }
@@ -6235,6 +6630,7 @@ document.getElementById("userCreateForm")?.addEventListener("submit", async (eve
     const username = document.getElementById("newUserUsername")?.value.trim();
     const displayName = document.getElementById("newUserDisplayName")?.value.trim() || null;
     const email = document.getElementById("newUserEmail")?.value.trim() || null;
+    const orgUnitId = parseOrgUnitId(document.getElementById("newUserOrgUnitId")?.value || "");
 
     await api("/directory-users", {
       method: "POST",
@@ -6242,12 +6638,14 @@ document.getElementById("userCreateForm")?.addEventListener("submit", async (eve
         username,
         display_name: displayName,
         email,
+        org_unit_id: orgUnitId,
       }),
     });
 
     document.getElementById("newUserUsername").value = "";
     document.getElementById("newUserDisplayName").value = "";
     document.getElementById("newUserEmail").value = "";
+    document.getElementById("newUserOrgUnitId").value = "";
 
     await loadManagedUsers("user", "");
     await loadDirectoryUsers();
@@ -6277,6 +6675,35 @@ document.getElementById("adminCreateForm")?.addEventListener("submit", async (ev
 
 [usersTableBody, inactiveUsersTableBody, adminsTableBody].forEach((tableBody) => {
   tableBody?.addEventListener("click", async (event) => {
+    const saveOrgBtn = event.target.closest(".user-org-save-btn");
+    if (saveOrgBtn) {
+      const userId = Number(saveOrgBtn.dataset.id || 0);
+      if (!userId) return;
+
+      const row = saveOrgBtn.closest("tr");
+      const orgSelect = row?.querySelector(".user-org-inline");
+      const orgUnitId = parseOrgUnitId(orgSelect?.value || "");
+      const orgUnitName = orgUnitId ? getOrgUnitNameById(orgUnitId) : "";
+
+      try {
+        await api(`/directory-users/${userId}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            org_unit_id: orgUnitId,
+            department: orgUnitName || null,
+          }),
+        });
+
+        const filter = getCurrentUserFilter();
+        await loadManagedUsers("user", filter.q, filter.orgUnitId);
+        await loadDirectoryUsers();
+        showToast("사용자 조직 정보를 저장했습니다.");
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
+
     const toggleBtn = event.target.closest(".user-toggle-btn");
     if (!toggleBtn) return;
 
@@ -6309,8 +6736,8 @@ document.getElementById("adminCreateForm")?.addEventListener("submit", async (ev
       if (role === "admin") {
         await loadManagedUsers("admin", document.getElementById("adminSearchQ")?.value || "");
       } else {
-        const query = getCurrentUserSearchQuery();
-        await loadManagedUsers("user", query);
+        const filter = getCurrentUserFilter();
+        await loadManagedUsers("user", filter.q, filter.orgUnitId);
       }
       if (role === "user") {
         await loadDirectoryUsers();
@@ -6821,6 +7248,94 @@ document.getElementById("settingCategoryTableBody").addEventListener("click", (e
   showToast("카테고리를 삭제했습니다.");
 });
 
+document.getElementById("saveOrgUnitBtn")?.addEventListener("click", async () => {
+  try {
+    if (!isAdminUser()) throw new Error("관리자 권한이 필요합니다.");
+
+    const editId = parseOrgUnitId(document.getElementById("orgUnitEditId")?.value || "");
+    const name = String(document.getElementById("orgUnitName")?.value || "").trim();
+    const code = String(document.getElementById("orgUnitCode")?.value || "").trim() || null;
+    const parentId = parseOrgUnitId(document.getElementById("orgUnitParentId")?.value || "");
+    const sortOrderRaw = Number(document.getElementById("orgUnitSortOrder")?.value || 0);
+    const sortOrder = Number.isFinite(sortOrderRaw) ? Math.trunc(sortOrderRaw) : 0;
+
+    if (!name) throw new Error("조직명을 입력해주세요.");
+    if (editId && parentId && editId === parentId) {
+      throw new Error("상위 조직은 자기 자신으로 지정할 수 없습니다.");
+    }
+
+    const payload = {
+      name,
+      code,
+      parent_id: parentId,
+      sort_order: sortOrder,
+    };
+
+    if (editId) {
+      await api(`/org-units/${editId}`, { method: "PUT", body: JSON.stringify(payload) });
+      showToast("조직 정보를 수정했습니다.");
+    } else {
+      await api("/org-units", { method: "POST", body: JSON.stringify(payload) });
+      showToast("조직을 생성했습니다.");
+    }
+
+    await loadOrgUnits(true);
+    await loadOrgIntegrityCheck();
+    resetOrgUnitForm();
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+document.getElementById("clearOrgUnitFormBtn")?.addEventListener("click", () => {
+  resetOrgUnitForm();
+});
+
+document.getElementById("reloadOrgUnitsBtn")?.addEventListener("click", async () => {
+  try {
+    await loadOrgUnits(true);
+    if (isAdminUser()) {
+      await loadOrgIntegrityCheck();
+    }
+    showToast("조직 목록을 새로고침했습니다.");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+document.getElementById("runOrgIntegrityCheckBtn")?.addEventListener("click", async () => {
+  try {
+    await loadOrgIntegrityCheck();
+    showToast("조직 정합 점검을 완료했습니다.");
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+orgUnitTableBody?.addEventListener("click", async (event) => {
+  const actionBtn = event.target.closest("button[data-action]");
+  if (!actionBtn) return;
+
+  const orgId = Number(actionBtn.dataset.id || 0);
+  if (!orgId) return;
+
+  try {
+    if (actionBtn.dataset.action === "edit-org") {
+      const row = getOrgUnitById(orgId);
+      if (!row) throw new Error("조직 정보를 찾을 수 없습니다.");
+      fillOrgUnitForm(row);
+      return;
+    }
+
+    if (actionBtn.dataset.action === "deactivate-org") {
+      await handleOrgUnitDeactivation(orgId);
+      return;
+    }
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
 document.getElementById("addAssetForm").addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -6953,6 +7468,7 @@ async function initialize() {
   resetSoftwareForm();
   updateAuthView();
   applyRoleTabVisibility();
+  syncOrgUnitSelects();
   updateLdapPasswordStatus();
   renderUsersTable("user");
   renderUsersTable("admin");
@@ -6979,6 +7495,24 @@ async function initialize() {
 }
 
 initialize();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
