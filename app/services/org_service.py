@@ -1,4 +1,4 @@
-﻿from collections import defaultdict
+﻿from collections import Counter, defaultdict
 from typing import Any
 
 from sqlalchemy import func, or_
@@ -128,6 +128,22 @@ def _build_org_parent_name_map(db: Session) -> dict[int, str]:
     }
 
 
+def _get_transfer_target_org(
+    db: Session,
+    *,
+    source_org_id: int,
+    target_org_unit_id: int,
+) -> models.OrganizationUnit:
+    target = crud.get_org_unit_by_id(db, int(target_org_unit_id))
+    if not target:
+        raise ValueError("org_unit_transfer_target_not_found")
+    if int(source_org_id) == int(target.id):
+        raise ValueError("org_unit_transfer_same_target")
+    if not bool(target.is_active):
+        raise ValueError("org_unit_transfer_target_inactive")
+    return target
+
+
 def list_org_units(db: Session, include_inactive: bool = True) -> list[schemas.OrganizationUnitResponse]:
     rows = crud.list_org_units(db, include_inactive=include_inactive)
     parent_name_map = _build_org_parent_name_map(db)
@@ -250,6 +266,91 @@ def build_org_unit_deactivation_preview(
     )
 
 
+def build_org_unit_transfer_preview(
+    db: Session,
+    org_unit_id: int,
+    target_org_unit_id: int,
+) -> schemas.OrganizationUnitTransferPreviewResponse | None:
+    source_org = crud.get_org_unit_by_id(db, int(org_unit_id))
+    if not source_org:
+        return None
+
+    target_org = _get_transfer_target_org(
+        db,
+        source_org_id=int(source_org.id),
+        target_org_unit_id=int(target_org_unit_id),
+    )
+
+    transferable_user_count = int(
+        db.query(func.count(models.DirectoryUser.id))
+        .filter(models.DirectoryUser.org_unit_id == int(source_org.id))
+        .scalar()
+        or 0
+    )
+    transferable_asset_count = int(
+        db.query(func.count(models.Asset.id))
+        .filter(models.Asset.org_unit_id == int(source_org.id))
+        .scalar()
+        or 0
+    )
+
+    return schemas.OrganizationUnitTransferPreviewResponse(
+        source_org_unit_id=int(source_org.id),
+        source_org_unit_name=_normalize_text(source_org.name) or f"조직#{source_org.id}",
+        target_org_unit_id=int(target_org.id),
+        target_org_unit_name=_normalize_text(target_org.name) or f"조직#{target_org.id}",
+        transferable_user_count=transferable_user_count,
+        transferable_asset_count=transferable_asset_count,
+    )
+
+
+def transfer_org_unit(
+    db: Session,
+    org_unit_id: int,
+    target_org_unit_id: int,
+) -> schemas.OrganizationUnitTransferResponse | None:
+    preview = build_org_unit_transfer_preview(db, int(org_unit_id), int(target_org_unit_id))
+    if not preview:
+        return None
+
+    target_name = _normalize_text(preview.target_org_unit_name)
+
+    user_rows = db.query(models.DirectoryUser).filter(models.DirectoryUser.org_unit_id == int(preview.source_org_unit_id)).all()
+    asset_rows = db.query(models.Asset).filter(models.Asset.org_unit_id == int(preview.source_org_unit_id)).all()
+
+    moved_user_count = 0
+    moved_asset_count = 0
+
+    for row in user_rows:
+        row.org_unit_id = int(preview.target_org_unit_id)
+        if target_name:
+            row.department = target_name
+        moved_user_count += 1
+
+    for row in asset_rows:
+        row.org_unit_id = int(preview.target_org_unit_id)
+        if target_name:
+            row.department = target_name
+        moved_asset_count += 1
+
+    db.commit()
+
+    # Transfer 직후 즉시 비활성화 가능 여부를 다시 확인해 운영 흐름을 단순화한다.
+    deactivation_preview = build_org_unit_deactivation_preview(db, int(preview.source_org_unit_id))
+
+    return schemas.OrganizationUnitTransferResponse(
+        ok=True,
+        message="조직 연결 데이터를 이관했습니다.",
+        source_org_unit_id=int(preview.source_org_unit_id),
+        source_org_unit_name=preview.source_org_unit_name,
+        target_org_unit_id=int(preview.target_org_unit_id),
+        target_org_unit_name=preview.target_org_unit_name,
+        moved_user_count=moved_user_count,
+        moved_asset_count=moved_asset_count,
+        deactivation_preview=deactivation_preview,
+    )
+
+
 def deactivate_org_unit(db: Session, org_unit_id: int) -> models.OrganizationUnit | None:
     db_org = crud.get_org_unit_by_id(db, org_unit_id)
     if not db_org:
@@ -274,6 +375,7 @@ def build_org_data_integrity_report(db: Session) -> dict[str, Any]:
     org_department_mismatch_users: list[dict[str, Any]] = []
     org_department_mismatch_assets: list[dict[str, Any]] = []
     ldap_department_unmapped: list[dict[str, Any]] = []
+    ldap_unmapped_department_counter: Counter[str] = Counter()
 
     for row in db.query(models.DirectoryUser).order_by(models.DirectoryUser.username.asc()).all():
         department = _normalize_text(row.department)
@@ -298,6 +400,7 @@ def build_org_data_integrity_report(db: Session) -> dict[str, Any]:
 
         if _normalize_text(row.source).lower() == "ldap" and org_id is None and department:
             ldap_department_unmapped.append(base)
+            ldap_unmapped_department_counter[department or "미지정"] += 1
 
     for row in db.query(models.Asset).order_by(models.Asset.id.desc()).all():
         department = _normalize_text(row.department)
@@ -319,11 +422,36 @@ def build_org_data_integrity_report(db: Session) -> dict[str, Any]:
         if org_id is not None and department and org_name and department != org_name:
             org_department_mismatch_assets.append(base)
 
+    ldap_unmapped_by_department = [
+        {"department": dept, "count": int(count)}
+        for dept, count in sorted(ldap_unmapped_department_counter.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+    missing_total = len(missing_org_with_department_users) + len(missing_org_with_department_assets)
+    mismatch_total = len(org_department_mismatch_users) + len(org_department_mismatch_assets)
+    ldap_unmapped_total = len(ldap_department_unmapped)
+
     return {
         "summary": {
-            "missing_org_with_department": len(missing_org_with_department_users) + len(missing_org_with_department_assets),
-            "org_department_mismatch": len(org_department_mismatch_users) + len(org_department_mismatch_assets),
-            "ldap_department_unmapped": len(ldap_department_unmapped),
+            "missing_org_with_department": missing_total,
+            "org_department_mismatch": mismatch_total,
+            "ldap_department_unmapped": ldap_unmapped_total,
+            "by_type": {
+                "missing_org_with_department": {
+                    "directory_users": len(missing_org_with_department_users),
+                    "assets": len(missing_org_with_department_assets),
+                    "total": missing_total,
+                },
+                "org_department_mismatch": {
+                    "directory_users": len(org_department_mismatch_users),
+                    "assets": len(org_department_mismatch_assets),
+                    "total": mismatch_total,
+                },
+                "ldap_department_unmapped": {
+                    "total": ldap_unmapped_total,
+                    "by_department": ldap_unmapped_by_department,
+                },
+            },
         },
         "missing_org_with_department": {
             "directory_users": missing_org_with_department_users,
@@ -334,4 +462,5 @@ def build_org_data_integrity_report(db: Session) -> dict[str, Any]:
             "assets": org_department_mismatch_assets,
         },
         "ldap_department_unmapped": ldap_department_unmapped,
+        "ldap_department_unmapped_by_department": ldap_unmapped_by_department,
     }

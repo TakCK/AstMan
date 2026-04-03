@@ -1180,12 +1180,33 @@ function fillOrgUnitForm(row) {
   renderOrgUnitParentSelect(String(row.parent_id || ""), Number(row.id || 0));
 }
 
+function buildOrgTransferTargetOptions(sourceOrgId, selectedValue = "") {
+  const sourceId = parseOrgUnitId(sourceOrgId);
+  const selectedId = parseOrgUnitId(selectedValue);
+  const options = ['<option value="">\uC774\uAD00 \uB300\uC0C1 \uC120\uD0DD</option>'];
+
+  sortedOrgUnits().forEach((row) => {
+    const targetId = Number(row?.id || 0);
+    if (!targetId) return;
+    if (sourceId && targetId === sourceId) return;
+    if (!row?.is_active) return;
+
+    const name = String(row?.name || "").trim();
+    if (!name) return;
+
+    const selectedAttr = selectedId === targetId ? " selected" : "";
+    options.push(`<option value="${targetId}"${selectedAttr}>${escapeHtml(name)}</option>`);
+  });
+
+  return options.join("");
+}
+
 function renderOrgUnitTable() {
   if (!orgUnitTableBody) return;
 
   const rows = sortedOrgUnits();
   if (!rows.length) {
-    orgUnitTableBody.innerHTML = "<tr><td colspan=\"7\">등록된 조직이 없습니다.</td></tr>";
+    orgUnitTableBody.innerHTML = '<tr><td colspan="7">\uB4F1\uB85D\uB41C \uC870\uC9C1\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.</td></tr>';
     return;
   }
 
@@ -1193,10 +1214,13 @@ function renderOrgUnitTable() {
     .map((row) => {
       const orgId = Number(row?.id || 0);
       const parentName = String(row?.parent_name || "").trim() || getOrgUnitNameById(row?.parent_id) || "-";
-      const statusText = row?.is_active ? "활성" : "비활성";
+      const statusText = row?.is_active ? "\uD65C\uC131" : "\uBE44\uD65C\uC131";
       const activeUserCount = Number(row?.active_user_count || 0);
       const activeAssetCount = Number(row?.active_asset_count || 0);
       const deactivateDisabled = row?.is_active ? "" : " disabled";
+      const transferOptionsHtml = buildOrgTransferTargetOptions(orgId);
+      const hasTransferTarget = transferOptionsHtml.includes('<option value="') && transferOptionsHtml !== '<option value="">\uC774\uAD00 \uB300\uC0C1 \uC120\uD0DD</option>';
+      const transferDisabled = hasTransferTarget ? "" : " disabled";
 
       return `
         <tr data-id="${orgId}">
@@ -1207,9 +1231,11 @@ function renderOrgUnitTable() {
           <td>${activeUserCount.toLocaleString("ko-KR")}</td>
           <td>${activeAssetCount.toLocaleString("ko-KR")}</td>
           <td>
-            <div class="table-actions">
-              <button type="button" class="mini-btn" data-action="edit-org" data-id="${orgId}">불러오기</button>
-              <button type="button" class="mini-btn danger" data-action="deactivate-org" data-id="${orgId}"${deactivateDisabled}>비활성화</button>
+            <div class="table-actions org-transfer-inline">
+              <select class="org-transfer-target" data-id="${orgId}">${transferOptionsHtml}</select>
+              <button type="button" class="mini-btn" data-action="transfer-org" data-id="${orgId}"${transferDisabled}>\uC774\uAD00</button>
+              <button type="button" class="mini-btn" data-action="edit-org" data-id="${orgId}">\uBD88\uB7EC\uC624\uAE30</button>
+              <button type="button" class="mini-btn danger" data-action="deactivate-org" data-id="${orgId}"${deactivateDisabled}>\uBE44\uD65C\uC131\uD654</button>
             </div>
           </td>
         </tr>
@@ -1222,17 +1248,10 @@ function renderOrgIntegrityReport(report = state.orgIntegrity) {
   if (!orgIntegritySummary || !orgIntegrityDetails) return;
 
   if (!report || typeof report !== "object") {
-    orgIntegritySummary.textContent = "아직 점검 결과가 없습니다.";
+    orgIntegritySummary.textContent = "\uC544\uC9C1 \uC810\uAC80 \uACB0\uACFC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.";
     orgIntegrityDetails.innerHTML = "";
     return;
   }
-
-  const summary = report.summary || {};
-  const missingCount = Number(summary.missing_org_with_department || 0);
-  const mismatchCount = Number(summary.org_department_mismatch || 0);
-  const ldapUnmappedCount = Number(summary.ldap_department_unmapped || 0);
-
-  orgIntegritySummary.textContent = `미매핑 ${missingCount}건 / 불일치 ${mismatchCount}건 / LDAP 자동매핑 실패 ${ldapUnmappedCount}건`;
 
   const missingUsers = Array.isArray(report.missing_org_with_department?.directory_users)
     ? report.missing_org_with_department.directory_users
@@ -1248,47 +1267,74 @@ function renderOrgIntegrityReport(report = state.orgIntegrity) {
     : [];
   const ldapUnmapped = Array.isArray(report.ldap_department_unmapped) ? report.ldap_department_unmapped : [];
 
+  const summary = report.summary || {};
+  const byType = summary.by_type || {};
+
+  const missingUsersCount = Number(byType.missing_org_with_department?.directory_users ?? missingUsers.length);
+  const missingAssetsCount = Number(byType.missing_org_with_department?.assets ?? missingAssets.length);
+  const mismatchUsersCount = Number(byType.org_department_mismatch?.directory_users ?? mismatchUsers.length);
+  const mismatchAssetsCount = Number(byType.org_department_mismatch?.assets ?? mismatchAssets.length);
+  const ldapUnmappedCount = Number(byType.ldap_department_unmapped?.total ?? ldapUnmapped.length);
+
+  orgIntegritySummary.textContent = `\uBBF8\uB9E4\uD551(\uC0AC\uC6A9\uC790 ${missingUsersCount} / \uC790\uC0B0 ${missingAssetsCount}) | \uBD88\uC77C\uCE58(\uC0AC\uC6A9\uC790 ${mismatchUsersCount} / \uC790\uC0B0 ${mismatchAssetsCount}) | LDAP \uC790\uB3D9\uB9E4\uD551 \uC2E4\uD328 ${ldapUnmappedCount}\uAC74`;
+
+  const ldapDepartmentCounts = Array.isArray(report.ldap_department_unmapped_by_department)
+    ? report.ldap_department_unmapped_by_department
+    : (Array.isArray(byType.ldap_department_unmapped?.by_department) ? byType.ldap_department_unmapped.by_department : []);
+
   const renderRows = (rows, formatter, emptyCols = 4) => {
     if (!rows.length) {
-      return `<tr><td colspan="${emptyCols}" class="muted">데이터가 없습니다.</td></tr>`;
+      return `<tr><td colspan="${emptyCols}" class="muted">\uB370\uC774\uD130\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.</td></tr>`;
     }
     return rows.map(formatter).join("");
   };
 
   orgIntegrityDetails.innerHTML = `
     <details>
-      <summary>org_unit_id 없음 + department 있음 (${missingUsers.length + missingAssets.length}건)</summary>
+      <summary>org_unit_id \uC5C6\uC74C + department \uC788\uC74C (${missingUsers.length + missingAssets.length}\uAC74)</summary>
       <div class="table-wrap setting-table-wrap">
         <table>
-          <thead><tr><th>구분</th><th>ID</th><th>이름/자산명</th><th>department</th></tr></thead>
+          <thead><tr><th>\uAD6C\uBD84</th><th>ID</th><th>\uC774\uB984/\uC790\uC0B0\uBA85</th><th>department</th></tr></thead>
           <tbody>
-            ${renderRows(missingUsers, (row) => `<tr><td>사용자</td><td>${escapeHtml(row.username || "-")}</td><td>${escapeHtml(row.display_name || "-")}</td><td>${escapeHtml(row.department || "-")}</td></tr>`)}
-            ${renderRows(missingAssets, (row) => `<tr><td>자산</td><td>${escapeHtml(row.asset_code || String(row.id || "-"))}</td><td>${escapeHtml(row.name || "-")}</td><td>${escapeHtml(row.department || "-")}</td></tr>`)}
+            ${renderRows(missingUsers, (row) => `<tr><td>\uC0AC\uC6A9\uC790</td><td>${escapeHtml(row.username || "-")}</td><td>${escapeHtml(row.display_name || "-")}</td><td>${escapeHtml(row.department || "-")}</td></tr>`)}
+            ${renderRows(missingAssets, (row) => `<tr><td>\uC790\uC0B0</td><td>${escapeHtml(row.asset_code || String(row.id || "-"))}</td><td>${escapeHtml(row.name || "-")}</td><td>${escapeHtml(row.department || "-")}</td></tr>`)}
           </tbody>
         </table>
       </div>
     </details>
 
     <details>
-      <summary>org_unit_id 있음 + department 불일치 (${mismatchUsers.length + mismatchAssets.length}건)</summary>
+      <summary>org_unit_id \uC788\uC74C + department \uBD88\uC77C\uCE58 (${mismatchUsers.length + mismatchAssets.length}\uAC74)</summary>
       <div class="table-wrap setting-table-wrap">
         <table>
-          <thead><tr><th>구분</th><th>ID</th><th>이름/자산명</th><th>department</th><th>org</th></tr></thead>
+          <thead><tr><th>\uAD6C\uBD84</th><th>ID</th><th>\uC774\uB984/\uC790\uC0B0\uBA85</th><th>department</th><th>org</th></tr></thead>
           <tbody>
-            ${renderRows(mismatchUsers, (row) => `<tr><td>사용자</td><td>${escapeHtml(row.username || "-")}</td><td>${escapeHtml(row.display_name || "-")}</td><td>${escapeHtml(row.department || "-")}</td><td>${escapeHtml(row.org_unit_name || "-")}</td></tr>`, 5)}
-            ${renderRows(mismatchAssets, (row) => `<tr><td>자산</td><td>${escapeHtml(row.asset_code || String(row.id || "-"))}</td><td>${escapeHtml(row.name || "-")}</td><td>${escapeHtml(row.department || "-")}</td><td>${escapeHtml(row.org_unit_name || "-")}</td></tr>`, 5)}
+            ${renderRows(mismatchUsers, (row) => `<tr><td>\uC0AC\uC6A9\uC790</td><td>${escapeHtml(row.username || "-")}</td><td>${escapeHtml(row.display_name || "-")}</td><td>${escapeHtml(row.department || "-")}</td><td>${escapeHtml(row.org_unit_name || "-")}</td></tr>`, 5)}
+            ${renderRows(mismatchAssets, (row) => `<tr><td>\uC790\uC0B0</td><td>${escapeHtml(row.asset_code || String(row.id || "-"))}</td><td>${escapeHtml(row.name || "-")}</td><td>${escapeHtml(row.department || "-")}</td><td>${escapeHtml(row.org_unit_name || "-")}</td></tr>`, 5)}
           </tbody>
         </table>
       </div>
     </details>
 
     <details>
-      <summary>LDAP department 있음 + org 자동매핑 실패 (${ldapUnmapped.length}건)</summary>
+      <summary>LDAP department \uC788\uC74C + org \uC790\uB3D9\uB9E4\uD551 \uC2E4\uD328 (${ldapUnmapped.length}\uAC74)</summary>
       <div class="table-wrap setting-table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>이름</th><th>department</th><th>source</th></tr></thead>
+          <thead><tr><th>ID</th><th>\uC774\uB984</th><th>department</th><th>source</th></tr></thead>
           <tbody>
             ${renderRows(ldapUnmapped, (row) => `<tr><td>${escapeHtml(row.username || "-")}</td><td>${escapeHtml(row.display_name || "-")}</td><td>${escapeHtml(row.department || "-")}</td><td>${escapeHtml(row.source || "-")}</td></tr>`)}
+          </tbody>
+        </table>
+      </div>
+    </details>
+
+    <details>
+      <summary>LDAP department\uBCC4 \uC790\uB3D9\uB9E4\uD551 \uC2E4\uD328 \uAC74\uC218 (${ldapDepartmentCounts.length}\uAC1C department)</summary>
+      <div class="table-wrap setting-table-wrap">
+        <table>
+          <thead><tr><th>department</th><th>\uAC74\uC218</th></tr></thead>
+          <tbody>
+            ${renderRows(ldapDepartmentCounts, (row) => `<tr><td>${escapeHtml(row.department || "\uBBF8\uC9C0\uC815")}</td><td>${Number(row.count || 0).toLocaleString("ko-KR")}</td></tr>`, 2)}
           </tbody>
         </table>
       </div>
@@ -1303,14 +1349,50 @@ async function loadOrgIntegrityCheck() {
   renderOrgIntegrityReport(report);
 }
 
+function buildOrgTransferPreviewMessage(preview) {
+  return [
+    `\uC6D0\uBCF8 \uC870\uC9C1: ${String(preview?.source_org_unit_name || "-")}`,
+    `\uB300\uC0C1 \uC870\uC9C1: ${String(preview?.target_org_unit_name || "-")}`,
+    `\uC774\uB3D9 \uB300\uC0C1 \uC0AC\uC6A9\uC790: ${Number(preview?.transferable_user_count || 0)}\uBA85`,
+    `\uC774\uB3D9 \uB300\uC0C1 \uC790\uC0B0: ${Number(preview?.transferable_asset_count || 0)}\uAC74`,
+  ].join("\n");
+}
+
+async function handleOrgUnitTransfer(orgUnitId, targetOrgUnitId) {
+  const sourceOrgId = Number(orgUnitId || 0);
+  const targetOrgId = Number(targetOrgUnitId || 0);
+  if (!sourceOrgId || !targetOrgId) return;
+
+  const preview = await api(`/org-units/${sourceOrgId}/transfer-preview?target_org_unit_id=${targetOrgId}`);
+  const previewMessage = buildOrgTransferPreviewMessage(preview);
+
+  const confirmed = confirm(`\uC870\uC9C1 \uC5F0\uACB0 \uB370\uC774\uD130\uB97C \uC774\uAD00\uD560\uAE4C\uC694?\n\n${previewMessage}`);
+  if (!confirmed) return;
+
+  const result = await api(`/org-units/${sourceOrgId}/transfer`, {
+    method: "POST",
+    body: JSON.stringify({ target_org_unit_id: targetOrgId }),
+  });
+
+  showToast(`\uC774\uAD00 \uC644\uB8CC: \uC0AC\uC6A9\uC790 ${Number(result?.moved_user_count || 0)}\uBA85, \uC790\uC0B0 ${Number(result?.moved_asset_count || 0)}\uAC74`);
+
+  const postPreview = result?.deactivation_preview;
+  if (postPreview && Array.isArray(postPreview.blocking_reasons) && postPreview.blocking_reasons.length === 0) {
+    showToast(`"${postPreview.org_unit_name}" \uC870\uC9C1\uC740 \uC774\uC81C \uBE44\uD65C\uC131\uD654 \uAC00\uB2A5\uD569\uB2C8\uB2E4.`);
+  }
+
+  await loadOrgUnits(true);
+  await loadOrgIntegrityCheck();
+}
+
 function buildOrgDeactivationPreviewMessage(preview) {
   const rows = [
-    `하위 활성 조직: ${Number(preview?.child_count || 0)}개`,
-    `연결 활성 사용자: ${Number(preview?.active_user_count || 0)}명`,
-    `연결 미폐기 자산: ${Number(preview?.active_asset_count || 0)}개`,
+    `\uD558\uC704 \uD65C\uC131 \uC870\uC9C1: ${Number(preview?.child_count || 0)}\uAC1C`,
+    `\uC5F0\uACB0 \uD65C\uC131 \uC0AC\uC6A9\uC790: ${Number(preview?.active_user_count || 0)}\uBA85`,
+    `\uC5F0\uACB0 \uBBF8\uD3D0\uAE30 \uC790\uC0B0: ${Number(preview?.active_asset_count || 0)}\uAC1C`,
   ];
   if (Array.isArray(preview?.blocking_reasons) && preview.blocking_reasons.length) {
-    rows.push("", "차단 사유:", ...preview.blocking_reasons.map((reason) => `- ${reason}`));
+    rows.push("", "\uCC28\uB2E8 \uC0AC\uC720:", ...preview.blocking_reasons.map((reason) => `- ${reason}`));
   }
   return rows.join("\n");
 }
@@ -1323,16 +1405,16 @@ async function handleOrgUnitDeactivation(orgUnitId) {
   const previewMessage = buildOrgDeactivationPreviewMessage(preview);
 
   if (Array.isArray(preview?.blocking_reasons) && preview.blocking_reasons.length) {
-    confirm(`조직 비활성화를 진행할 수 없습니다.\n\n${previewMessage}`);
+    confirm(`\uC870\uC9C1 \uBE44\uD65C\uC131\uD654\uB97C \uC9C4\uD589\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.\n\n${previewMessage}`);
     showToast(preview.blocking_reasons[0]);
     return;
   }
 
-  const confirmed = confirm(`조직 "${preview.org_unit_name}" 을(를) 비활성화할까요?\n\n${previewMessage}`);
+  const confirmed = confirm(`\uC870\uC9C1 "${preview.org_unit_name}" \uC744(\uB97C) \uBE44\uD65C\uC131\uD654\uD560\uAE4C\uC694?\n\n${previewMessage}`);
   if (!confirmed) return;
 
   await api(`/org-units/${orgId}/deactivate`, { method: "POST" });
-  showToast("조직을 비활성화했습니다.");
+  showToast("\uC870\uC9C1\uC744 \uBE44\uD65C\uC131\uD654\uD588\uC2B5\uB2C8\uB2E4.");
   await loadOrgUnits(true);
   await loadOrgIntegrityCheck();
   resetOrgUnitForm();
@@ -2519,14 +2601,28 @@ async function api(path, options = {}) {
 
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) {
-    let detail = "요청 처리에 실패했습니다";
+    let detail = "\uC694\uCCAD \uCC98\uB9AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4";
+    let detailData = null;
     try {
       const errorData = await response.json();
-      if (errorData.detail) detail = errorData.detail;
+      if (Object.prototype.hasOwnProperty.call(errorData, "detail")) {
+        detailData = errorData.detail;
+        if (typeof detailData === "string") {
+          detail = detailData;
+        } else if (detailData && typeof detailData === "object") {
+          if (typeof detailData.message === "string" && detailData.message.trim()) {
+            detail = detailData.message;
+          }
+        }
+      }
     } catch {
       // ignore parse
     }
-    throw new Error(detail);
+
+    const err = new Error(detail);
+    err.status = response.status;
+    err.detailData = detailData;
+    throw err;
   }
 
   if (response.status === 204) return null;
@@ -7327,6 +7423,18 @@ orgUnitTableBody?.addEventListener("click", async (event) => {
       return;
     }
 
+    if (actionBtn.dataset.action === "transfer-org") {
+      const rowEl = actionBtn.closest("tr");
+      const targetSelect = rowEl?.querySelector(".org-transfer-target");
+      const targetOrgId = parseOrgUnitId(targetSelect?.value || "");
+      if (!targetOrgId) {
+        showToast("\uC774\uAD00 \uB300\uC0C1 \uC870\uC9C1\uC744 \uC120\uD0DD\uD574\uC8FC\uC138\uC694.");
+        return;
+      }
+      await handleOrgUnitTransfer(orgId, targetOrgId);
+      return;
+    }
+
     if (actionBtn.dataset.action === "deactivate-org") {
       await handleOrgUnitDeactivation(orgId);
       return;
@@ -7495,6 +7603,7 @@ async function initialize() {
 }
 
 initialize();
+
 
 
 

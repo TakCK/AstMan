@@ -87,23 +87,21 @@ def _decrypt_bind_password(encrypted_text: str) -> str | None:
 
 
 def _default_software_mail_subject_template() -> str:
-    return "[ITAM] ?뚰봽?몄썾??留뚮즺 ?뚮┝ ({DATE})"
-
+    return "[ITAM] 소프트웨어 만료 알림 ({DATE})"
 
 def _default_software_mail_body_template() -> str:
-    return """?뚰봽?몄썾??留뚮즺 ?뚮┝ ({DATE})
+    return """소프트웨어 만료 알림 ({DATE})
 
-- 議고쉶 ?쇱씠?좎뒪: {CHECKED_LICENSES}嫄?
-- 留뚮즺 ?덉젙({NOTIFY_DAYS}???대궡): {EXPIRING_COUNT}嫄?
-- ?대? 留뚮즺: {EXPIRED_COUNT}嫄?
+- 조회 라이선스: {CHECKED_LICENSES}건
+- 만료 예정({NOTIFY_DAYS}일 이내): {EXPIRING_COUNT}건
+- 만료됨: {EXPIRED_COUNT}건
 
-[留뚮즺 ?덉젙 紐⑸줉]
+[만료 예정 목록]
 {EXPIRING_ITEMS}
 
-[留뚮즺 紐⑸줉]
+[만료 목록]
 {EXPIRED_ITEMS}
 """
-
 
 def _default_software_mail_config() -> dict:
     return {
@@ -294,24 +292,22 @@ def _build_software_mail_config_response(db: Session) -> dict:
 
 
 def _default_software_user_mail_subject_template() -> str:
-    return "[ITAM] {USER_NAME}???뚰봽?몄썾??留뚮즺 ?뚮┝ ({DATE})"
-
+    return "[ITAM] {USER_NAME}님 소프트웨어 만료 알림 ({DATE})"
 
 def _default_software_user_mail_body_template() -> str:
-    return """?덈뀞?섏꽭??{USER_NAME}??
+    return """안녕하세요 {USER_NAME}님,
 
-?뚰봽?몄썾???쇱씠?좎뒪 留뚮즺 ?덈궡?낅땲?? ({DATE})
+소프트웨어 라이선스 만료 안내입니다. ({DATE})
 
-- 留뚮즺 ?덉젙({NOTIFY_DAYS}???대궡): {USER_EXPIRING_COUNT}嫄?
-- ?대? 留뚮즺: {USER_EXPIRED_COUNT}嫄?
+- 만료 예정({NOTIFY_DAYS}일 이내): {USER_EXPIRING_COUNT}건
+- 이미 만료: {USER_EXPIRED_COUNT}건
 
-[??留뚮즺 ?덉젙 紐⑸줉]
+[내 만료 예정 목록]
 {EXPIRING_ITEMS}
 
-[??留뚮즺 紐⑸줉]
+[내 만료 목록]
 {EXPIRED_ITEMS}
 """
-
 
 def _default_software_user_mail_config() -> dict:
     return {
@@ -562,7 +558,7 @@ def _collect_software_expiry_targets(db: Session, notify_days: int) -> dict:
 
             days_left = (end_date - today).days
             row = {
-                "license_name": str(sw.product_name or "(?대쫫?놁쓬)").strip(),
+                "license_name": str(sw.product_name or "(\uc774\ub984\uc5c6\uc74c)").strip(),
                 "username": username,
                 "display_name": str(user_info.get("display_name") or username).strip() or username,
                 "email": str(user_info.get("email") or "").strip(),
@@ -608,23 +604,23 @@ def _compose_software_expiry_mail(config: dict, payload: dict) -> tuple[str, str
     if expiring_items:
         for row in expiring_items[:200]:
             expiring_lines.append(
-                f"- {row['end_date']} ({row['days_left']}???⑥쓬) | {row['license_name']} | {row['display_name']} ({row['username']})"
+                f"- {row['end_date']} ({row['days_left']}일 남음) | {row['license_name']} | {row['display_name']} ({row['username']})"
             )
         if len(expiring_items) > 200:
             expiring_lines.append(f"- ... +{len(expiring_items) - 200}")
     else:
-        expiring_lines.append("- ????놁쓬")
+        expiring_lines.append("- 없음")
 
     expired_lines: list[str] = []
     if expired_items:
         for row in expired_items[:200]:
             expired_lines.append(
-                f"- {row['end_date']} ({abs(row['days_left'])}??寃쎄낵) | {row['license_name']} | {row['display_name']} ({row['username']})"
+                f"- {row['end_date']} ({abs(row['days_left'])}일 경과) | {row['license_name']} | {row['display_name']} ({row['username']})"
             )
         if len(expired_items) > 200:
             expired_lines.append(f"- ... +{len(expired_items) - 200}")
     else:
-        expired_lines.append("- ????놁쓬")
+        expired_lines.append("- 없음")
 
     recipient_count = len(config.get("to_emails") or [])
     notify_days = int(config.get("notify_days") or 30)
@@ -635,21 +631,12 @@ def _compose_software_expiry_mail(config: dict, payload: dict) -> tuple[str, str
         "CHECKED_LICENSES": str(int(payload.get("checked_licenses") or 0)),
         "EXPIRING_COUNT": str(len(expiring_items)),
         "EXPIRED_COUNT": str(len(expired_items)),
-        "RECIPIENT_COUNT": str(recipient_count),
         "EXPIRING_ITEMS": "\n".join(expiring_lines),
         "EXPIRED_ITEMS": "\n".join(expired_lines),
     }
 
-    subject_template = str(config.get("subject_template") or _default_software_mail_subject_template()).strip()
-    body_template = str(config.get("body_template") or _default_software_mail_body_template()).strip()
-
-    subject = _render_software_mail_template(subject_template, token_values).strip()
-    if not subject:
-        subject = _render_software_mail_template(_default_software_mail_subject_template(), token_values).strip()
-
-    body = _render_software_mail_template(body_template, token_values).strip()
-    if not body:
-        body = _render_software_mail_template(_default_software_mail_body_template(), token_values).strip()
+    subject = _render_software_mail_template(config.get("subject_template") or _default_software_mail_subject_template(), token_values)
+    body = _render_software_mail_template(config.get("body_template") or _default_software_mail_body_template(), token_values)
 
     result = {
         "checked_licenses": int(payload.get("checked_licenses") or 0),
@@ -660,7 +647,6 @@ def _compose_software_expiry_mail(config: dict, payload: dict) -> tuple[str, str
 
     return subject, body, result
 
-
 def _send_mail_via_smtp(
     config: dict,
     smtp_password: str | None,
@@ -670,11 +656,11 @@ def _send_mail_via_smtp(
 ):
     host = str(config.get("smtp_host") or "").strip()
     if not host:
-        raise ValueError("SMTP ?쒕쾭 二쇱냼瑜??낅젰?댁＜?몄슂")
+        raise ValueError("SMTP 서버 주소를 입력해주세요")
 
     recipient_list = _sanitize_email_list(recipients if recipients is not None else (config.get("to_emails") or []))
     if not recipient_list:
-        raise ValueError("?섏떊 ?대찓??二쇱냼瑜?1媛??댁긽 ?낅젰?댁＜?몄슂")
+        raise ValueError("수신 이메일 주소를 1개 이상 입력해주세요")
 
     port = int(config.get("smtp_port") or 587)
     use_ssl = bool(config.get("use_ssl"))
@@ -683,7 +669,7 @@ def _send_mail_via_smtp(
     from_email = str(config.get("from_email") or "").strip() or username or "assetmanager@local"
 
     if username and not str(smtp_password or "").strip():
-        raise ValueError("SMTP 鍮꾨?踰덊샇瑜??낅젰?댁＜?몄슂")
+        raise ValueError("SMTP 비밀번호를 입력해주세요")
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -743,22 +729,20 @@ def _compose_software_user_expiry_mail(config: dict, username: str, display_name
     expiring_lines: list[str] = []
     if expiring_items:
         for row in expiring_items[:200]:
-            expiring_lines.append(f"- {row['end_date']} ({row['days_left']}???⑥쓬) | {row['license_name']}")
+            expiring_lines.append(f"- {row['end_date']} ({row['days_left']}일 남음) | {row['license_name']}")
         if len(expiring_items) > 200:
             expiring_lines.append(f"- ... +{len(expiring_items) - 200}")
     else:
-        expiring_lines.append("- ????놁쓬")
+        expiring_lines.append("- 없음")
 
     expired_lines: list[str] = []
     if expired_items:
         for row in expired_items[:200]:
-            expired_lines.append(f"- {row['end_date']} ({abs(row['days_left'])}??寃쎄낵) | {row['license_name']}")
+            expired_lines.append(f"- {row['end_date']} ({abs(row['days_left'])}일 경과) | {row['license_name']}")
         if len(expired_items) > 200:
             expired_lines.append(f"- ... +{len(expired_items) - 200}")
     else:
-        expired_lines.append("- ????놁쓬")
-
-    user_items = expiring_lines + ([""] if expiring_lines and expired_lines else []) + expired_lines
+        expired_lines.append("- 없음")
 
     token_values = {
         "DATE": today_text,
@@ -770,23 +754,12 @@ def _compose_software_user_expiry_mail(config: dict, username: str, display_name
         "USER_EXPIRED_COUNT": str(len(expired_items)),
         "EXPIRING_ITEMS": "\n".join(expiring_lines),
         "EXPIRED_ITEMS": "\n".join(expired_lines),
-        "USER_ITEMS": "\n".join(user_items),
     }
 
-    subject_template = str(config.get("subject_template") or _default_software_user_mail_subject_template()).strip()
-    body_template = str(config.get("body_template") or _default_software_user_mail_body_template()).strip()
-
-    subject = _render_software_mail_template(subject_template, token_values).strip()
-    if not subject:
-        subject = _render_software_mail_template(_default_software_user_mail_subject_template(), token_values).strip()
-
-    body = _render_software_mail_template(body_template, token_values).strip()
-    if not body:
-        body = _render_software_mail_template(_default_software_user_mail_body_template(), token_values).strip()
+    subject = _render_software_mail_template(config.get("subject_template") or _default_software_user_mail_subject_template(), token_values)
+    body = _render_software_mail_template(config.get("body_template") or _default_software_user_mail_body_template(), token_values)
 
     return subject, body, len(expiring_items), len(expired_items)
-
-
 
 def _build_software_user_mail_targets(user_config: dict, payload: dict) -> tuple[list[dict], dict[str, int]]:
     include_expired = bool(user_config.get("include_expired", True))
@@ -851,11 +824,11 @@ def _build_software_user_mail_targets(user_config: dict, payload: dict) -> tuple
         sendable = True
 
         if only_active_users and not is_active:
-            status = "鍮꾪솢???ъ슜???쒖쇅"
+            status = "\ube44\ud65c\uc131 \uc0ac\uc6a9\uc790 \uc81c\uc678"
             sendable = False
             skipped_inactive += 1
         elif not email:
-            status = "?대찓???놁쓬"
+            status = "\uc774\uba54\uc77c \uc5c6\uc74c"
             sendable = False
             skipped_no_email += 1
         else:
@@ -956,7 +929,7 @@ def _send_software_user_expiry_alarm(
     _set_software_user_mail_state(
         db,
         last_sent_at=datetime.now(timezone.utc),
-        last_error=(f"?ъ슜??硫붿씪 ?쇰? 諛쒖넚 ?ㅽ뙣: {first_error}" if first_error else None),
+        last_error=(f"\uc0ac\uc6a9\uc790 \uba54\uc77c \uc77c\ubd80 \ubc1c\uc1a1 \uc2e4\ud328: {first_error}" if first_error else None),
         last_result=result,
     )
 
@@ -988,7 +961,7 @@ def _run_software_mail_scheduled_once(db: Session):
             if int(result.get("sent") or 0) == 0:
                 _set_software_mail_state(db, last_sent_at=datetime.now(timezone.utc), last_error=None, last_result=result)
         except Exception as e:
-            _set_software_mail_state(db, last_error=f"愿由ъ옄 硫붿씪 諛쒖넚 ?ㅽ뙣: {e}")
+            _set_software_mail_state(db, last_error=f"관리자 메일 발송 실패: {e}")
 
     user_config = _get_software_user_mail_config(db)
     user_state = _get_software_user_mail_state(db)
@@ -998,7 +971,7 @@ def _run_software_mail_scheduled_once(db: Session):
             if int(result.get("sent") or 0) == 0 and int(result.get("failed_users") or 0) == 0:
                 _set_software_user_mail_state(db, last_sent_at=datetime.now(timezone.utc), last_error=None, last_result=result)
         except Exception as e:
-            _set_software_user_mail_state(db, last_error=f"?ъ슜??硫붿씪 諛쒖넚 ?ㅽ뙣: {e}")
+            _set_software_user_mail_state(db, last_error=f"사용자 메일 발송 실패: {e}")
 
 def ensure_runtime_software_mail_password(db: Session) -> str | None:
     return _ensure_runtime_software_mail_password(db)
@@ -1014,11 +987,10 @@ def set_mail_smtp_setting(payload: schemas.MailSmtpConfigUpdate, db: Session, _:
             _persist_software_mail_password(db, payload.smtp_password)
     except ValueError as e:
         if str(e) == "ldap_password_encryption_key_missing":
-            raise HTTPException(status_code=400, detail="SMTP 鍮꾨?踰덊샇 ?뷀샇???ㅺ? ?ㅼ젙?섏? ?딆븯?듬땲?? SECRET_KEY ?먮뒗 LDAP_BIND_PASSWORD_KEY瑜??뺤씤?댁＜?몄슂")
+            raise HTTPException(status_code=400, detail="SMTP 비밀번호 암호화 키가 설정되지 않았습니다. SECRET_KEY 또는 LDAP_BIND_PASSWORD_KEY를 확인해주세요")
         raise
 
     return _update_mail_smtp_config(db, payload.model_dump(exclude={"smtp_password"}))
-
 
 def get_mail_admin_setting(db: Session, _: models.User | None = None) -> dict:
     return _build_mail_admin_config_response(db)
@@ -1050,14 +1022,13 @@ def send_admin_mail_now(payload: schemas.MailSendNowRequest, db: Session, _: mod
         result = _send_software_expiry_alarm(db, smtp_password=password, force_send_when_empty=True)
         return {
             "ok": True,
-            "message": "愿由ъ옄 留뚮즺 ?뚮┝ 硫붿씪??諛쒖넚?덉뒿?덈떎",
+            "message": "관리자 만료 알림 메일을 발송했습니다",
             "result": result,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (smtplib.SMTPException, OSError) as e:
-        raise HTTPException(status_code=400, detail=f"SMTP 諛쒖넚 ?ㅽ뙣: {e}")
-
+        raise HTTPException(status_code=400, detail=f"SMTP 발송 실패: {e}")
 
 def send_user_mail_now(payload: schemas.MailSendNowRequest, db: Session, _: models.User | None = None) -> dict:
     password = str(payload.smtp_password or "").strip() or None
@@ -1068,14 +1039,13 @@ def send_user_mail_now(payload: schemas.MailSendNowRequest, db: Session, _: mode
         result = _send_software_user_expiry_alarm(db, smtp_password=password, force_send_when_empty=True)
         return {
             "ok": True,
-            "message": "?ъ슜??留뚮즺 ?뚮┝ 硫붿씪??諛쒖넚?덉뒿?덈떎",
+            "message": "사용자 만료 알림 메일을 발송했습니다",
             "result": result,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (smtplib.SMTPException, OSError) as e:
-        raise HTTPException(status_code=400, detail=f"SMTP 諛쒖넚 ?ㅽ뙣: {e}")
-
+        raise HTTPException(status_code=400, detail=f"SMTP 발송 실패: {e}")
 
 def get_software_expiry_mail_setting(db: Session, _: models.User | None = None) -> dict:
     return _build_software_mail_config_response(db)
@@ -1091,11 +1061,10 @@ def set_software_expiry_mail_setting(payload: schemas.SoftwareExpiryMailConfigUp
             _persist_software_mail_password(db, payload.smtp_password)
     except ValueError as e:
         if str(e) == "ldap_password_encryption_key_missing":
-            raise HTTPException(status_code=400, detail="SMTP 鍮꾨?踰덊샇 ?뷀샇???ㅺ? ?ㅼ젙?섏? ?딆븯?듬땲?? SECRET_KEY ?먮뒗 LDAP_BIND_PASSWORD_KEY瑜??뺤씤?댁＜?몄슂")
+            raise HTTPException(status_code=400, detail="SMTP 비밀번호 암호화 키가 설정되지 않았습니다. SECRET_KEY 또는 LDAP_BIND_PASSWORD_KEY를 확인해주세요")
         raise
 
     return _build_software_mail_config_response(db)
-
 
 def send_software_expiry_mail_now(payload: schemas.SoftwareExpiryMailSendNowRequest, db: Session, _: models.User | None = None) -> dict:
     password = str(payload.smtp_password or "").strip() or None
@@ -1106,16 +1075,11 @@ def send_software_expiry_mail_now(payload: schemas.SoftwareExpiryMailSendNowRequ
         result = _send_software_expiry_alarm(db, smtp_password=password, force_send_when_empty=True)
         return {
             "ok": True,
-            "message": "?뚰봽?몄썾??留뚮즺 ?뚮┝ 硫붿씪??諛쒖넚?덉뒿?덈떎",
+            "message": "소프트웨어 만료 알림 메일을 발송했습니다",
             "result": result,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (smtplib.SMTPException, OSError) as e:
-        raise HTTPException(status_code=400, detail=f"SMTP 諛쒖넚 ?ㅽ뙣: {e}")
-
-
-
-
-
+        raise HTTPException(status_code=400, detail=f"SMTP 발송 실패: {e}")
 

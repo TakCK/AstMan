@@ -2009,3 +2009,14 @@ tbody tr:hover {
 .org-integrity-details details[open] summary {
   margin-bottom: 8px;
 }
+
+.org-transfer-inline {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.org-transfer-inline .org-transfer-target {
+  min-width: 0;
+}

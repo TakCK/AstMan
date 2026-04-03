@@ -118,6 +118,30 @@ class OrganizationUnitDeactivationPreviewResponse(BaseModel):
     blocking_reasons: list[str] = Field(default_factory=list)
 
 
+class OrganizationUnitTransferRequest(BaseModel):
+    target_org_unit_id: int = Field(ge=1)
+
+
+class OrganizationUnitTransferPreviewResponse(BaseModel):
+    source_org_unit_id: int
+    source_org_unit_name: str
+    target_org_unit_id: int
+    target_org_unit_name: str
+    transferable_user_count: int
+    transferable_asset_count: int
+
+
+class OrganizationUnitTransferResponse(BaseModel):
+    ok: bool
+    message: str
+    source_org_unit_id: int
+    source_org_unit_name: str
+    target_org_unit_id: int
+    target_org_unit_name: str
+    moved_user_count: int
+    moved_asset_count: int
+    deactivation_preview: OrganizationUnitDeactivationPreviewResponse | None = None
+
 class DirectoryUserResponse(BaseModel):
     id: int
     username: str
@@ -824,6 +848,7 @@ class AssetLabelPreviewResponse(BaseModel):
     branding_logo_path: str = ""
     labels: list[AssetLabelItem] = Field(default_factory=list)
     excluded: list[AssetLabelExcludedItem] = Field(default_factory=list)
+
 
 
 

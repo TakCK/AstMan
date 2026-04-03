@@ -137,6 +137,40 @@ def _build_directory_user_maps(db: Session) -> tuple[dict[str, str], dict[str, s
 
     return department_map, display_name_map
 
+
+def _build_directory_user_team_identity_map(db: Session) -> dict[str, dict[str, str]]:
+    team_identity_map: dict[str, dict[str, str]] = {}
+
+    org_name_by_id: dict[int, str] = {}
+    for org_id, org_name in db.query(models.OrganizationUnit.id, models.OrganizationUnit.name).all():
+        key = int(org_id)
+        name = str(org_name or "").strip()
+        if not name:
+            continue
+        org_name_by_id[key] = name
+
+    rows = db.query(
+        models.DirectoryUser.username,
+        models.DirectoryUser.department,
+        models.DirectoryUser.org_unit_id,
+    ).all()
+
+    for username, department, org_unit_id in rows:
+        key = str(username or "").strip()
+        if not key:
+            continue
+
+        normalized_org_id = int(org_unit_id) if org_unit_id else None
+        org_name = org_name_by_id.get(normalized_org_id) if normalized_org_id else None
+        bucket_key, team_name = _resolve_team_identity_for_report(normalized_org_id, org_name, department)
+        team_identity_map[key] = {
+            "bucket_key": bucket_key,
+            "team_name": team_name,
+        }
+
+    return team_identity_map
+
+
 def _extract_license_assignees(
     license_row: models.SoftwareLicense,
     department_map: dict[str, str],
@@ -220,6 +254,7 @@ def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all"
     normalized_filter = _normalize_scope_filter(scope_filter)
 
     department_map, display_name_map = _build_directory_user_maps(db)
+    team_identity_map = _build_directory_user_team_identity_map(db)
     exchange_rate_setting = crud.get_exchange_rate_setting(db)
     usd_krw_rate = float(exchange_rate_setting.get("usd_krw") or crud.DEFAULT_USD_KRW_RATE)
 
@@ -231,6 +266,7 @@ def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all"
 
     team_buckets: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
+            "team_name": "\ubbf8\ud560\ub2f9",
             "users": set(),
             "assigned_license_count": 0,
             "monthly_cost": 0.0,
@@ -279,13 +315,6 @@ def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all"
         if not assignment_count_by_user:
             continue
 
-        team_by_user: dict[str, str] = {}
-        for row in assignee_rows:
-            username = str(row.get("username") or "").strip()
-            if not username:
-                continue
-            team_by_user[username] = _normalize_department(row.get("department"))
-
         license_id = _to_int(getattr(license_row, "id", 0), default=0)
 
         for username, seat_count in assignment_count_by_user.items():
@@ -293,8 +322,16 @@ def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all"
             if count <= 0:
                 continue
 
-            team_name = _normalize_department(team_by_user.get(username) or department_map.get(username))
-            bucket = team_buckets[team_name]
+            identity = team_identity_map.get(username)
+            if identity:
+                team_name = _normalize_department(identity.get("team_name"))
+                bucket_key = str(identity.get("bucket_key") or f"dept:{team_name}")
+            else:
+                team_name = _normalize_department(department_map.get(username))
+                bucket_key = f"dept:{team_name}"
+
+            bucket = team_buckets[bucket_key]
+            bucket["team_name"] = team_name
             bucket["users"].add(username)
             bucket["assigned_license_count"] += count
             bucket["monthly_cost"] += float(monthly_unit_cost) * float(count)
@@ -308,14 +345,14 @@ def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all"
 
     team_summary = [
         {
-            "team_name": team_name,
+            "team_name": str(bucket.get("team_name") or "\ubbf8\ud560\ub2f9"),
             "user_count": len(bucket["users"]),
             "assigned_license_count": _to_int(bucket["assigned_license_count"]),
             "monthly_cost": round(_to_float(bucket["monthly_cost"]), 2),
             "yearly_cost": round(_to_float(bucket["monthly_cost"]) * 12.0, 2),
             "license_type_count": len(bucket["license_types"]),
         }
-        for team_name, bucket in team_buckets.items()
+        for bucket in team_buckets.values()
     ]
     team_summary.sort(key=lambda row: (-float(row["monthly_cost"]), row["team_name"]))
 
@@ -333,7 +370,6 @@ def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all"
         "overall_summary": overall_summary,
         "team_summary": team_summary,
     }
-
 
 def _normalize_snapshot_month(value: date | None) -> date:
     target = value or date.today()
@@ -368,6 +404,7 @@ def create_software_cost_snapshot(
     team_summary = summary.get("team_summary") if isinstance(summary, dict) else []
     team_rows = team_summary if isinstance(team_summary, list) else []
 
+    # TODO(phase2): snapshot? team_name ? org identity(bucket key) ?? ?? ?? ??
     rows_to_create: list[models.SoftwareCostSnapshot] = []
     for row in team_rows:
         if not isinstance(row, dict):
@@ -464,17 +501,18 @@ def list_software_cost_snapshots(
 
 def build_general_license_report_data(db: Session) -> dict[str, Any]:
     department_map, display_name_map = _build_directory_user_maps(db)
+    team_identity_map = _build_directory_user_team_identity_map(db)
     exchange_rate_setting = crud.get_exchange_rate_setting(db)
     usd_krw_rate = float(exchange_rate_setting.get("usd_krw") or crud.DEFAULT_USD_KRW_RATE)
 
     general_licenses = [
         row
         for row in db.query(models.SoftwareLicense).order_by(models.SoftwareLicense.product_name.asc(), models.SoftwareLicense.id.asc()).all()
-        if crud.normalize_license_scope(getattr(row, "license_scope", None)) == "일반"
+        if crud.normalize_license_scope(getattr(row, "license_scope", None)) == "\uc77c\ubc18"
     ]
 
     team_buckets: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"users": set(), "assigned_quantity": 0, "monthly_cost": 0.0}
+        lambda: {"team_name": "\ubbf8\ud560\ub2f9", "users": set(), "assigned_quantity": 0, "monthly_cost": 0.0}
     )
     license_summary: list[dict[str, Any]] = []
     user_detail: list[dict[str, Any]] = []
@@ -484,8 +522,7 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
     total_license_quantity = 0
 
     for license_row in general_licenses:
-        license_id = int(license_row.id)
-        product_name = str(license_row.product_name or "(이름없음)").strip() or "(이름없음)"
+        product_name = str(license_row.product_name or "(\uc774\ub984\uc5c6\uc74c)").strip() or "(\uc774\ub984\uc5c6\uc74c)"
         total_quantity = max(0, _to_int(license_row.total_quantity, default=0))
 
         unit_cost_krw = _to_krw_cost(license_row.purchase_cost, license_row.purchase_currency, usd_krw_rate)
@@ -522,23 +559,45 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
         all_assigned_users.update(unique_assigned_users)
 
         team_users_map: dict[str, set[str]] = defaultdict(set)
+        team_name_by_bucket: dict[str, str] = {}
         for username in unique_assigned_users:
-            team = department_map.get(username, "미할당")
-            team_users_map[team].add(username)
+            identity = team_identity_map.get(username)
+            if identity:
+                bucket_key = str(identity.get("bucket_key") or "")
+                team_name = _normalize_department(identity.get("team_name"))
+            else:
+                team_name = _normalize_department(department_map.get(username))
+                bucket_key = f"dept:{team_name}"
+
+            if not bucket_key:
+                bucket_key = f"dept:{team_name}"
+            team_users_map[bucket_key].add(username)
+            team_name_by_bucket[bucket_key] = team_name
 
         team_assignment_counts: dict[str, int] = defaultdict(int)
         for username, count in assignment_count_by_user.items():
-            team = department_map.get(username, "미할당")
-            team_assignment_counts[team] += int(count)
+            identity = team_identity_map.get(username)
+            if identity:
+                bucket_key = str(identity.get("bucket_key") or "")
+                team_name = _normalize_department(identity.get("team_name"))
+            else:
+                team_name = _normalize_department(department_map.get(username))
+                bucket_key = f"dept:{team_name}"
+
+            if not bucket_key:
+                bucket_key = f"dept:{team_name}"
+            team_name_by_bucket[bucket_key] = team_name
+            team_assignment_counts[bucket_key] += int(count)
 
         if team_assignment_counts:
-            for team_name, seat_count in team_assignment_counts.items():
-                bucket = team_buckets[team_name]
-                bucket["users"].update(team_users_map.get(team_name, set()))
+            for bucket_key, seat_count in team_assignment_counts.items():
+                bucket = team_buckets[bucket_key]
+                bucket["team_name"] = team_name_by_bucket.get(bucket_key, "\ubbf8\ud560\ub2f9")
+                bucket["users"].update(team_users_map.get(bucket_key, set()))
                 bucket["assigned_quantity"] += int(seat_count)
                 bucket["monthly_cost"] += float(monthly_unit_cost) * float(seat_count)
 
-        teams_for_license = sorted(team_users_map.keys()) if team_users_map else ["미할당"]
+        teams_for_license = sorted({team_name_by_bucket.get(k, "???") for k in team_users_map.keys()}) if team_users_map else ["\ubbf8\ud560\ub2f9"]
 
         license_summary.append(
             {
@@ -554,10 +613,16 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
         for row in assignee_rows:
             username = str(row.get("username") or "").strip()
             owned_quantity = max(1, int(assignment_count_by_user.get(username, 1)))
+            identity = team_identity_map.get(username)
+            if identity:
+                team_name = _normalize_department(identity.get("team_name"))
+            else:
+                team_name = _normalize_department(row.get("department"))
+
             user_detail.append(
                 {
                     "user": row["display_name"],
-                    "team": _normalize_department(row.get("department")),
+                    "team": team_name,
                     "license_name": product_name,
                     "unit_cost": unit_cost_krw,
                     "owned_quantity": owned_quantity,
@@ -570,12 +635,12 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
 
     team_summary = [
         {
-            "team_name": team_name,
+            "team_name": str(bucket.get("team_name") or "\ubbf8\ud560\ub2f9"),
             "user_count": len(bucket["users"]),
             "license_count": int(bucket["assigned_quantity"]),
             "monthly_cost": round(float(bucket["monthly_cost"]), 2),
         }
-        for team_name, bucket in team_buckets.items()
+        for bucket in team_buckets.values()
     ]
     team_summary.sort(key=lambda row: row["team_name"])
 
@@ -583,10 +648,10 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
     user_detail.sort(key=lambda row: (row["team"], row["user"], row["license_name"]))
 
     summary = {
-        "기준일": date.today().isoformat(),
-        "총 비용": round(total_cost, 2),
-        "총 사용자 수": len(all_assigned_users),
-        "총 라이선스 수": total_license_quantity,
+        "\uae30\uc900\uc77c": date.today().isoformat(),
+        "\ucd1d \ube44\uc6a9": round(total_cost, 2),
+        "\ucd1d \uc0ac\uc6a9\uc790 \uc218": len(all_assigned_users),
+        "\ucd1d \ub77c\uc774\uc120\uc2a4 \uc218": total_license_quantity,
     }
 
     return {
@@ -595,7 +660,6 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
         "license_summary": license_summary,
         "user_detail": user_detail,
     }
-
 
 def _apply_header_style(ws) -> None:
     for cell in ws[1]:
@@ -996,6 +1060,7 @@ def create_general_license_report_html(report_data: dict[str, Any]) -> str:
 </body>
 </html>
 """
+
 
 
 

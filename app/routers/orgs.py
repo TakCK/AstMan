@@ -62,6 +62,62 @@ def get_org_unit_deactivation_preview(
     return preview
 
 
+@router.get(
+    "/org-units/{org_unit_id}/transfer-preview",
+    response_model=schemas.OrganizationUnitTransferPreviewResponse,
+    summary="조직 이관 영향도 미리보기",
+    tags=["조직"],
+)
+def get_org_unit_transfer_preview(
+    org_unit_id: int,
+    target_org_unit_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(security.get_current_admin),
+):
+    try:
+        preview = org_service.build_org_unit_transfer_preview(db, org_unit_id, target_org_unit_id)
+    except ValueError as e:
+        if str(e) == "org_unit_transfer_same_target":
+            raise HTTPException(status_code=400, detail="같은 조직으로는 이관할 수 없습니다")
+        if str(e) == "org_unit_transfer_target_not_found":
+            raise HTTPException(status_code=400, detail="이관 대상 조직을 찾을 수 없습니다")
+        if str(e) == "org_unit_transfer_target_inactive":
+            raise HTTPException(status_code=400, detail="비활성 조직으로는 이관할 수 없습니다")
+        raise HTTPException(status_code=400, detail="조직 이관 미리보기 요청을 확인해주세요")
+
+    if not preview:
+        raise HTTPException(status_code=404, detail="원본 조직을 찾을 수 없습니다")
+    return preview
+
+
+@router.post(
+    "/org-units/{org_unit_id}/transfer",
+    response_model=schemas.OrganizationUnitTransferResponse,
+    summary="조직 이관 실행",
+    tags=["조직"],
+)
+def transfer_org_unit(
+    org_unit_id: int,
+    payload: schemas.OrganizationUnitTransferRequest,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(security.get_current_admin),
+):
+    try:
+        result = org_service.transfer_org_unit(db, org_unit_id, payload.target_org_unit_id)
+    except ValueError as e:
+        if str(e) == "org_unit_transfer_same_target":
+            raise HTTPException(status_code=400, detail="같은 조직으로는 이관할 수 없습니다")
+        if str(e) == "org_unit_transfer_target_not_found":
+            raise HTTPException(status_code=400, detail="이관 대상 조직을 찾을 수 없습니다")
+        if str(e) == "org_unit_transfer_target_inactive":
+            raise HTTPException(status_code=400, detail="비활성 조직으로는 이관할 수 없습니다")
+        raise HTTPException(status_code=400, detail="조직 이관 요청을 확인해주세요")
+
+    if not result:
+        raise HTTPException(status_code=404, detail="원본 조직을 찾을 수 없습니다")
+    return result
+
+
 @router.put("/org-units/{org_unit_id}", response_model=schemas.OrganizationUnitResponse, summary="조직 수정", tags=["조직"])
 def update_org_unit(
     org_unit_id: int,
@@ -104,8 +160,21 @@ def deactivate_org_unit(
     try:
         row = org_service.deactivate_org_unit(db, org_unit_id)
     except org_service.OrgUnitDeactivationBlockedError as e:
-        reasons = "; ".join(e.preview.blocking_reasons) if e.preview.blocking_reasons else "비활성화 차단 조건이 있습니다"
-        raise HTTPException(status_code=409, detail=f"조직 비활성화를 진행할 수 없습니다. {reasons}")
+        reasons = e.preview.blocking_reasons or []
+        message = "조직 비활성화를 진행할 수 없습니다. "
+        if reasons:
+            message += "; ".join(reasons)
+        else:
+            message += "비활성화 차단 조건이 있습니다"
+
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": message,
+                "blocking_reasons": reasons,
+                "preview": e.preview.model_dump(),
+            },
+        )
 
     if not row:
         raise HTTPException(status_code=404, detail="조직을 찾을 수 없습니다")
