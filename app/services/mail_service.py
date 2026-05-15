@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import hashlib
@@ -1082,4 +1082,3 @@ def send_software_expiry_mail_now(payload: schemas.SoftwareExpiryMailSendNowRequ
         raise HTTPException(status_code=400, detail=str(e))
     except (smtplib.SMTPException, OSError) as e:
         raise HTTPException(status_code=400, detail=f"SMTP 발송 실패: {e}")
-

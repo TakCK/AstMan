@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas, security
 from ..database import get_db
-from ..services import asset_service, csv_import_service, label_service
+from ..services import access_scope_service, asset_service, csv_import_service, label_service
 
 router = APIRouter()
 
@@ -23,11 +23,15 @@ def _value_error_message(err: ValueError) -> str:
     return "요청 값을 확인해주세요"
 
 
+def _scope(db: Session, current_user: models.AppAccount) -> access_scope_service.UserAccessScope:
+    return access_scope_service.build_user_access_scope(db, current_user)
+
+
 @router.post("/imports/hw-sw-csv", response_model=schemas.CsvHwSwImportResponse, summary="HW/SW CSV 통합 업로드", tags=["자산"])
 async def import_hw_sw_csv(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(security.get_current_admin),
+    current_user: models.AppAccount = Depends(security.get_current_admin),
 ):
     return await csv_import_service.import_csv_upload(file, db, current_user, forced_kind=None)
 
@@ -36,7 +40,7 @@ async def import_hw_sw_csv(
 async def import_hardware_csv(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(security.get_current_admin),
+    current_user: models.AppAccount = Depends(security.get_current_admin),
 ):
     return await csv_import_service.import_csv_upload(file, db, current_user, forced_kind="hw")
 
@@ -45,7 +49,7 @@ async def import_hardware_csv(
 def create_asset(
     asset: schemas.AssetCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
         return asset_service.create_asset(db, asset, actor=current_user)
@@ -72,7 +76,7 @@ def list_assets(
     warranty_overdue: bool = False,
     rental_expiring_days: int | None = None,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
     return asset_service.list_assets(
         db,
@@ -88,6 +92,7 @@ def list_assets(
         warranty_expiring_days=warranty_expiring_days,
         warranty_overdue=warranty_overdue,
         rental_expiring_days=rental_expiring_days,
+        access_scope=_scope(db, current_user),
     )
 
 
@@ -95,27 +100,27 @@ def list_assets(
 def get_assets_label_preview(
     payload: schemas.AssetLabelPreviewRequest,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
-    return label_service.get_assets_label_preview(db, payload.asset_ids)
+    return label_service.get_assets_label_preview(db, payload.asset_ids, access_scope=_scope(db, current_user))
 
 
 @router.get("/assets/{asset_id}/label", response_model=schemas.AssetLabelPreviewResponse, summary="자산 스티커 미리보기 데이터(단일)", tags=["자산"])
 def get_asset_label_preview(
     asset_id: int,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
-    return label_service.get_asset_label_preview(db, asset_id)
+    return label_service.get_asset_label_preview(db, asset_id, access_scope=_scope(db, current_user))
 
 
 @router.get("/assets/{asset_id}", response_model=schemas.AssetResponse, summary="자산 상세 조회", tags=["자산"])
 def get_asset(
     asset_id: int,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
-    row = asset_service.get_asset_response(db, asset_id)
+    row = asset_service.get_asset_response(db, asset_id, access_scope=_scope(db, current_user))
     if not row:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
     return row
@@ -126,10 +131,10 @@ def get_asset_history(
     asset_id: int,
     limit: int = 100,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
-    history = asset_service.list_asset_history(db, asset_id=asset_id, limit=limit)
-    if not history and not asset_service.get_asset(db, asset_id):
+    history = asset_service.list_asset_history(db, asset_id=asset_id, limit=limit, access_scope=_scope(db, current_user))
+    if not history and not asset_service.get_asset(db, asset_id, access_scope=_scope(db, current_user)):
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
     return history
 
@@ -139,13 +144,19 @@ def update_asset(
     asset_id: int,
     payload: schemas.AssetUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_admin),
 ):
     if payload.model_dump(exclude_unset=True) == {}:
         raise HTTPException(status_code=400, detail="수정할 항목이 없습니다")
 
     try:
-        row = asset_service.update_asset(db, asset_id, payload, actor=current_user)
+        row = asset_service.update_asset(
+            db,
+            asset_id,
+            payload,
+            actor=current_user,
+            access_scope=_scope(db, current_user),
+        )
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="자산코드 또는 시리얼번호가 이미 존재합니다")
@@ -164,10 +175,16 @@ def assign_asset(
     asset_id: int,
     payload: schemas.AssetAssignRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
-        row = asset_service.assign_asset(db, asset_id, payload, actor=current_user)
+        row = asset_service.assign_asset(
+            db,
+            asset_id,
+            payload,
+            actor=current_user,
+            access_scope=_scope(db, current_user),
+        )
     except ValueError:
         raise HTTPException(status_code=400, detail="폐기완료 자산은 할당할 수 없습니다")
 
@@ -182,10 +199,16 @@ def return_asset(
     asset_id: int,
     payload: schemas.AssetReturnRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
-        row = asset_service.return_asset(db, asset_id, payload, actor=current_user)
+        row = asset_service.return_asset(
+            db,
+            asset_id,
+            payload,
+            actor=current_user,
+            access_scope=_scope(db, current_user),
+        )
     except ValueError:
         raise HTTPException(status_code=400, detail="폐기완료 자산은 반납 처리할 수 없습니다")
 
@@ -200,9 +223,15 @@ def mark_disposal_required(
     asset_id: int,
     payload: schemas.AssetStatusChangeRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_admin),
 ):
-    row = asset_service.mark_disposal_required(db, asset_id, payload, actor=current_user)
+    row = asset_service.mark_disposal_required(
+        db,
+        asset_id,
+        payload,
+        actor=current_user,
+        access_scope=_scope(db, current_user),
+    )
     if not row:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
 
@@ -214,9 +243,15 @@ def mark_disposed(
     asset_id: int,
     payload: schemas.AssetStatusChangeRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_admin),
 ):
-    row = asset_service.mark_disposed(db, asset_id, payload, actor=current_user)
+    row = asset_service.mark_disposed(
+        db,
+        asset_id,
+        payload,
+        actor=current_user,
+        access_scope=_scope(db, current_user),
+    )
     if not row:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
 
@@ -227,15 +262,19 @@ def mark_disposed(
 def delete_asset(
     asset_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
-        deleted = asset_service.delete_asset(db, asset_id, actor=current_user)
+        deleted = asset_service.delete_asset(
+            db,
+            asset_id,
+            actor=current_user,
+            access_scope=_scope(db, current_user),
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=_value_error_message(e))
 
     if not deleted:
         raise HTTPException(status_code=404, detail="자산을 찾을 수 없습니다")
-
 
 

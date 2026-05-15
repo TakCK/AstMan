@@ -1,4 +1,4 @@
-﻿from collections import defaultdict
+from collections import defaultdict
 
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from .. import crud, models, schemas, security
 
 
-def create_user(db: Session, payload: schemas.UserCreate) -> models.User:
+def create_user(db: Session, payload: schemas.UserCreate) -> models.AppAccount:
     if crud.get_user_by_username(db, payload.username):
         raise ValueError("user_exists")
 
@@ -23,7 +23,7 @@ def create_user(db: Session, payload: schemas.UserCreate) -> models.User:
         raise ValueError("user_exists")
 
 
-def list_users(db: Session, role: str | None = None, q: str | None = None, limit: int = 200) -> list[models.User]:
+def list_users(db: Session, role: str | None = None, q: str | None = None, limit: int = 200) -> list[models.AppAccount]:
     if role and role not in {"user", "admin"}:
         raise ValueError("invalid_role")
 
@@ -31,8 +31,8 @@ def list_users(db: Session, role: str | None = None, q: str | None = None, limit
     return crud.list_users(db, role=role, q=q, limit=safe_limit)
 
 
-def update_user_admin(db: Session, user_id: int, payload: schemas.UserAdminUpdate) -> models.User | None:
-    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+def update_user_admin(db: Session, user_id: int, payload: schemas.UserAdminUpdate) -> models.AppAccount | None:
+    db_user = db.query(models.AppAccount).filter(models.AppAccount.id == user_id).first()
     if not db_user:
         return None
 
@@ -73,6 +73,7 @@ def _to_directory_user_response(db: Session, db_user: models.DirectoryUser) -> s
         "manager_dn": db_user.manager_dn,
         "user_dn": db_user.user_dn,
         "object_guid": db_user.object_guid,
+        "is_leader": bool(getattr(db_user, "is_leader", False)),
         "is_active": db_user.is_active,
         "source": db_user.source,
         "synced_at": db_user.synced_at,
@@ -87,11 +88,16 @@ def list_directory_users(
     limit: int = 200,
     include_inactive: bool = False,
     org_unit_id: int | None = None,
+    allowed_usernames: set[str] | list[str] | None = None,
 ) -> list[schemas.DirectoryUserResponse]:
     safe_limit = max(1, min(limit, 5000))
     rows = crud.list_directory_users(db, q=q, limit=safe_limit, include_inactive=include_inactive, org_unit_id=org_unit_id)
-    return [_to_directory_user_response(db, row) for row in rows]
 
+    allowed = {str(value or "").strip() for value in (allowed_usernames or []) if str(value or "").strip()}
+    if allowed:
+        rows = [row for row in rows if str(getattr(row, "username", "") or "").strip() in allowed]
+
+    return [_to_directory_user_response(db, row) for row in rows]
 
 def create_directory_user(
     db: Session,
@@ -262,7 +268,7 @@ def deactivate_directory_user(
     db: Session,
     directory_user_id: int,
     payload: schemas.DirectoryUserDeactivateRequest,
-    current_admin: models.User,
+    current_admin: models.AppAccount,
 ) -> schemas.DirectoryUserDeactivateResponse | None:
     db_user = crud.get_directory_user_by_id(db, directory_user_id)
     if not db_user:
@@ -336,6 +342,9 @@ def deactivate_directory_user(
         assigned_license_count=remaining_license_count,
         user=_to_directory_user_response(db, updated_user),
     )
+
+
+
 
 
 

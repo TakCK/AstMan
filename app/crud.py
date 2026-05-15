@@ -58,7 +58,6 @@ LICENSE_SCOPE_ALIAS = {
 }
 DEFAULT_LICENSE_SCOPE = "일반"
 
-
 def normalize_status(status: str | None) -> str:
     if not status:
         return DEFAULT_STATUS
@@ -182,6 +181,87 @@ def _normalize_assignees(values: list[str] | None, *, allow_duplicates: bool = F
         result.append(key)
     return result
 
+def _normalize_username_set(values: set[str] | list[str] | None) -> set[str]:
+    result: set[str] = set()
+    for value in values or []:
+        key = str(value or "").strip()
+        if key:
+            result.add(key)
+    return result
+
+
+def _normalize_int_set(values: set[int] | list[int] | None) -> set[int]:
+    result: set[int] = set()
+    for value in values or []:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            result.add(parsed)
+    return result
+
+
+def _apply_asset_access_scope_filter(
+    query,
+    *,
+    allowed_org_unit_ids: set[int] | list[int] | None = None,
+    allowed_owner_values: set[str] | list[str] | None = None,
+):
+    org_ids = sorted(_normalize_int_set(allowed_org_unit_ids))
+    owner_values = sorted(_normalize_username_set(allowed_owner_values))
+
+    if not org_ids and not owner_values:
+        return query
+
+    conditions = []
+    if org_ids:
+        conditions.append(models.Asset.org_unit_id.in_(org_ids))
+    if owner_values:
+        conditions.append(models.Asset.owner.in_(owner_values))
+
+    if not conditions:
+        return query
+
+    return query.filter(or_(*conditions))
+
+
+def _get_software_assignment_count_map(
+    db_row: models.SoftwareLicense,
+    allowed_usernames: set[str] | list[str] | None = None,
+) -> dict[str, int]:
+    _normalize_software_license_json_fields(db_row)
+
+    allowed = _normalize_username_set(allowed_usernames)
+    assignment_count_by_user: dict[str, int] = {}
+
+    for raw in db_row.assignees or []:
+        username = str(raw or "").strip()
+        if not username:
+            continue
+        if allowed and username not in allowed:
+            continue
+        assignment_count_by_user[username] = int(assignment_count_by_user.get(username, 0)) + 1
+
+    if assignment_count_by_user:
+        return assignment_count_by_user
+
+    for raw in db_row.assignee_details or []:
+        if isinstance(raw, schemas.SoftwareLicenseAssigneeDetail):
+            item = raw.model_dump()
+        elif isinstance(raw, dict):
+            item = raw
+        else:
+            continue
+
+        username = str(item.get("username") or "").strip()
+        if not username:
+            continue
+        if allowed and username not in allowed:
+            continue
+        assignment_count_by_user[username] = int(assignment_count_by_user.get(username, 0)) + 1
+
+    return assignment_count_by_user
 
 def _string_or_default(value, default: str) -> str:
     text = str(value or "").strip()
@@ -198,7 +278,7 @@ def _normalize_software_date(value) -> date | None:
     try:
         return date.fromisoformat(str(value))
     except ValueError as exc:
-        raise ValueError("사용자별 시작일/만료일 형식이 올바르지 않습니다") from exc
+        raise ValueError("????癒????뽰삂??筌띾슢利???類ㅻ뻼????而?몴?? ??녿뮸??덈뼄") from exc
 
 
 def _normalize_assignee_details(values: list | None, default_purchase_model: str) -> list[dict[str, str | None]]:
@@ -221,7 +301,7 @@ def _normalize_assignee_details(values: list | None, default_purchase_model: str
         end_date = _normalize_software_date(item.get("end_date"))
 
         if start_date and end_date and end_date < start_date:
-            raise ValueError("사용자별 만료일은 시작일보다 빠를 수 없습니다")
+            raise ValueError("????癒??筌띾슢利??? ??뽰삂??곕궖????쥓? ????곷뮸??덈뼄")
 
         purchase_model = _string_or_default(item.get("purchase_model"), default_purchase_model)
 
@@ -278,7 +358,7 @@ def _sync_software_assignees_and_details(
             start_date = _normalize_software_date(current.get("start_date"))
             end_date = _normalize_software_date(current.get("end_date"))
             if start_date and end_date and end_date < start_date:
-                raise ValueError("사용자별 만료일은 시작일보다 빠를 수 없습니다")
+                raise ValueError("????癒??筌띾슢利??? ??뽰삂??곕궖????쥓? ????곷뮸??덈뼄")
 
             merged_details.append(
                 {
@@ -316,8 +396,13 @@ def _normalize_software_license_json_fields(db_row: models.SoftwareLicense) -> m
 
     return db_row
 
-def _get_software_assignee_end_dates(db_row: models.SoftwareLicense) -> list[date]:
+def _get_software_assignee_end_dates(
+    db_row: models.SoftwareLicense,
+    allowed_usernames: set[str] | list[str] | None = None,
+) -> list[date]:
     _normalize_software_license_json_fields(db_row)
+
+    allowed = _normalize_username_set(allowed_usernames)
 
     default_end: date | None = None
     if db_row.end_date:
@@ -344,10 +429,25 @@ def _get_software_assignee_end_dates(db_row: models.SoftwareLicense) -> list[dat
         except ValueError:
             detail_end_map[username] = None
 
-    result: list[date] = []
+    seen_usernames: set[str] = set()
+    usernames: list[str] = []
+
     for raw_user in db_row.assignees or []:
         username = str(raw_user or "").strip()
-        if not username:
+        if not username or username in seen_usernames:
+            continue
+        seen_usernames.add(username)
+        usernames.append(username)
+
+    for username in detail_end_map.keys():
+        if username in seen_usernames:
+            continue
+        seen_usernames.add(username)
+        usernames.append(username)
+
+    result: list[date] = []
+    for username in usernames:
+        if allowed and username not in allowed:
             continue
 
         end_date = detail_end_map.get(username)
@@ -384,8 +484,8 @@ def _enforce_status_owner_rules(target_status: str, candidate_owner: str | None)
     return owner if owner else "미지정"
 
 
-def get_user_by_username(db: Session, username: str) -> models.User | None:
-    return db.query(models.User).filter(models.User.username == username).first()
+def get_user_by_username(db: Session, username: str) -> models.AppAccount | None:
+    return db.query(models.AppAccount).filter(models.AppAccount.username == username).first()
 
 
 def create_user(
@@ -394,8 +494,8 @@ def create_user(
     password_hash: str,
     role: str = "user",
     is_active: bool = True,
-) -> models.User:
-    db_user = models.User(
+) -> models.AppAccount:
+    db_user = models.AppAccount(
         username=username,
         password_hash=password_hash,
         role=role,
@@ -413,27 +513,27 @@ def list_users(
     role: str | None = None,
     q: str | None = None,
     limit: int = 200,
-) -> list[models.User]:
-    query = db.query(models.User)
+) -> list[models.AppAccount]:
+    query = db.query(models.AppAccount)
 
     if role:
-        query = query.filter(models.User.role == role)
+        query = query.filter(models.AppAccount.role == role)
 
     if q:
         keyword = f"%{q}%"
-        query = query.filter(models.User.username.ilike(keyword))
+        query = query.filter(models.AppAccount.username.ilike(keyword))
 
-    return query.order_by(models.User.username.asc()).limit(limit).all()
+    return query.order_by(models.AppAccount.username.asc()).limit(limit).all()
 
 
 def update_user_admin(
     db: Session,
-    db_user: models.User,
+    db_user: models.AppAccount,
     *,
     is_active: bool | None = None,
     password_hash: str | None = None,
     role: str | None = None,
-) -> models.User:
+) -> models.AppAccount:
     if is_active is not None:
         db_user.is_active = bool(is_active)
     if password_hash:
@@ -714,6 +814,7 @@ def create_directory_user(
         manager_dn=(payload.manager_dn or "").strip() or None,
         user_dn=(payload.user_dn or "").strip() or None,
         object_guid=(payload.object_guid or "").strip() or None,
+        is_leader=bool(payload.is_leader),
         is_active=True,
         source=source,
         synced_at=datetime.now(timezone.utc),
@@ -765,6 +866,8 @@ def update_directory_user(
         db_user.user_dn = (updates.get("user_dn") or "").strip() or None
     if "object_guid" in updates:
         db_user.object_guid = (updates.get("object_guid") or "").strip() or None
+    if "is_leader" in updates:
+        db_user.is_leader = bool(updates.get("is_leader"))
     if "is_active" in updates:
         db_user.is_active = bool(updates.get("is_active"))
 
@@ -810,6 +913,7 @@ def upsert_directory_users(
             "manager_dn": (item.get("manager_dn") or "").strip() or None,
             "user_dn": (item.get("user_dn") or "").strip() or None,
             "object_guid": (item.get("object_guid") or "").strip() or None,
+            "is_leader": bool(item.get("is_leader")) if "is_leader" in item else None,
         }
 
     now = datetime.now(timezone.utc)
@@ -834,6 +938,7 @@ def upsert_directory_users(
                 manager_dn=payload["manager_dn"],
                 user_dn=payload["user_dn"],
                 object_guid=payload["object_guid"],
+                is_leader=bool(payload["is_leader"]) if payload["is_leader"] is not None else False,
                 is_active=True,
                 source=source,
                 synced_at=now,
@@ -848,6 +953,10 @@ def upsert_directory_users(
             if getattr(row, field) != new_value:
                 setattr(row, field, new_value)
                 changed = True
+
+        if payload["is_leader"] is not None and row.is_leader != bool(payload["is_leader"]):
+            row.is_leader = bool(payload["is_leader"])
+            changed = True
 
         if row.source != source and row.source != "manual":
             row.source = source
@@ -917,7 +1026,7 @@ def _log_asset_history(
     db: Session,
     asset_id: int,
     action: str,
-    actor: models.User,
+    actor: models.AppAccount,
     changed_fields: dict | None,
 ):
     db.add(
@@ -931,7 +1040,7 @@ def _log_asset_history(
     )
 
 
-def create_asset(db: Session, asset: schemas.AssetCreate, actor: models.User) -> models.Asset:
+def create_asset(db: Session, asset: schemas.AssetCreate, actor: models.AppAccount) -> models.Asset:
     payload = asset.model_dump()
     payload["status"] = normalize_status(payload.get("status"))
     payload["usage_type"] = normalize_usage_type(payload.get("usage_type"))
@@ -997,10 +1106,17 @@ def list_assets(
     warranty_expiring_days: int | None = None,
     warranty_overdue: bool = False,
     rental_expiring_days: int | None = None,
+    allowed_org_unit_ids: set[int] | list[int] | None = None,
+    allowed_owner_values: set[str] | list[str] | None = None,
 ):
     query = db.query(models.Asset).outerjoin(
         models.OrganizationUnit,
         models.Asset.org_unit_id == models.OrganizationUnit.id,
+    )
+    query = _apply_asset_access_scope_filter(
+        query,
+        allowed_org_unit_ids=allowed_org_unit_ids,
+        allowed_owner_values=allowed_owner_values,
     )
 
     if status:
@@ -1008,7 +1124,7 @@ def list_assets(
         query = query.filter(or_(models.Asset.status == normalized, models.Asset.status == status))
 
     if usage_type:
-        query = query.filter(models.Asset.usage_type == normalize_usage_type(usage_type))
+        query = query.filter(models.Asset.usage_type == "대여장비")
 
     if category:
         query = query.filter(models.Asset.category.ilike(f"%{category}%"))
@@ -1058,15 +1174,28 @@ def list_assets(
 
     return query.order_by(models.Asset.id.desc()).offset(skip).limit(limit).all()
 
-def get_asset(db: Session, asset_id: int):
-    return db.query(models.Asset).filter(models.Asset.id == asset_id).first()
+
+def get_asset(
+    db: Session,
+    asset_id: int,
+    *,
+    allowed_org_unit_ids: set[int] | list[int] | None = None,
+    allowed_owner_values: set[str] | list[str] | None = None,
+):
+    query = db.query(models.Asset)
+    query = _apply_asset_access_scope_filter(
+        query,
+        allowed_org_unit_ids=allowed_org_unit_ids,
+        allowed_owner_values=allowed_owner_values,
+    )
+    return query.filter(models.Asset.id == asset_id).first()
 
 
 def update_asset(
     db: Session,
     db_asset: models.Asset,
     payload: schemas.AssetUpdate,
-    actor: models.User,
+    actor: models.AppAccount,
 ):
     updates = payload.model_dump(exclude_unset=True)
 
@@ -1161,7 +1290,7 @@ def update_asset(
 def _apply_state_change(
     db: Session,
     db_asset: models.Asset,
-    actor: models.User,
+    actor: models.AppAccount,
     action: str,
     updates: dict,
     memo: str | None,
@@ -1196,7 +1325,7 @@ def _apply_state_change(
 def assign_asset(
     db: Session,
     db_asset: models.Asset,
-    actor: models.User,
+    actor: models.AppAccount,
     payload: schemas.AssetAssignRequest,
 ):
     current_status = normalize_status(db_asset.status)
@@ -1237,7 +1366,7 @@ def assign_asset(
 def return_asset(
     db: Session,
     db_asset: models.Asset,
-    actor: models.User,
+    actor: models.AppAccount,
     payload: schemas.AssetReturnRequest,
 ):
     current_status = normalize_status(db_asset.status)
@@ -1267,7 +1396,7 @@ def return_asset(
 def mark_disposal_required(
     db: Session,
     db_asset: models.Asset,
-    actor: models.User,
+    actor: models.AppAccount,
     payload: schemas.AssetStatusChangeRequest,
 ):
     return _apply_state_change(
@@ -1283,7 +1412,7 @@ def mark_disposal_required(
 def mark_disposed(
     db: Session,
     db_asset: models.Asset,
-    actor: models.User,
+    actor: models.AppAccount,
     payload: schemas.AssetStatusChangeRequest,
 ):
     return _apply_state_change(
@@ -1296,7 +1425,7 @@ def mark_disposed(
     )
 
 
-def delete_asset(db: Session, db_asset: models.Asset, actor: models.User):
+def delete_asset(db: Session, db_asset: models.Asset, actor: models.AppAccount):
     snapshot = _asset_snapshot(db_asset)
 
     _log_asset_history(
@@ -1346,7 +1475,7 @@ def create_software_license(db: Session, payload: schemas.SoftwareLicenseCreate)
 
     total_quantity = int(data.get("total_quantity") or 1)
     if len(data["assignees"]) > total_quantity:
-        raise ValueError("총 수량보다 할당 수량이 많을 수 없습니다")
+        raise ValueError("????롮쎗癰귣????醫딅뼣 ??롮쎗??筌띾‘??????곷뮸??덈뼄")
 
     db_row = models.SoftwareLicense(**data)
     db.add(db_row)
@@ -1363,6 +1492,7 @@ def list_software_licenses(
     q: str | None = None,
     expiring_days: int | None = None,
     expired_only: bool = False,
+    allowed_assignee_usernames: set[str] | list[str] | None = None,
 ):
     query = db.query(models.SoftwareLicense)
 
@@ -1382,6 +1512,14 @@ def list_software_licenses(
     rows = query.order_by(models.SoftwareLicense.id.desc()).all()
     rows = [_normalize_software_license_json_fields(row) for row in rows]
 
+    allowed = _normalize_username_set(allowed_assignee_usernames)
+    if allowed:
+        rows = [
+            row
+            for row in rows
+            if _get_software_assignment_count_map(row, allowed)
+        ]
+
     today = date.today()
 
     if expiring_days and expiring_days > 0:
@@ -1389,14 +1527,14 @@ def list_software_licenses(
         rows = [
             row
             for row in rows
-            if any(today <= end_date <= until for end_date in _get_software_assignee_end_dates(row))
+            if any(today <= end_date <= until for end_date in _get_software_assignee_end_dates(row, allowed if allowed else None))
         ]
 
     if expired_only:
         rows = [
             row
             for row in rows
-            if any(end_date < today for end_date in _get_software_assignee_end_dates(row))
+            if any(end_date < today for end_date in _get_software_assignee_end_dates(row, allowed if allowed else None))
         ]
 
     safe_skip = max(0, int(skip or 0))
@@ -1404,13 +1542,22 @@ def list_software_licenses(
     return rows[safe_skip : safe_skip + safe_limit]
 
 
-
-def get_software_license(db: Session, license_id: int) -> models.SoftwareLicense | None:
+def get_software_license(
+    db: Session,
+    license_id: int,
+    *,
+    allowed_assignee_usernames: set[str] | list[str] | None = None,
+) -> models.SoftwareLicense | None:
     row = db.query(models.SoftwareLicense).filter(models.SoftwareLicense.id == license_id).first()
     if not row:
         return None
-    return _normalize_software_license_json_fields(row)
 
+    normalized = _normalize_software_license_json_fields(row)
+    allowed = _normalize_username_set(allowed_assignee_usernames)
+    if allowed and not _get_software_assignment_count_map(normalized, allowed):
+        return None
+
+    return normalized
 
 
 def update_software_license(
@@ -1458,7 +1605,7 @@ def update_software_license(
 
     next_total = int(updates.get("total_quantity") or db_row.total_quantity or 1)
     if len(next_assignees) > next_total:
-        raise ValueError("총 수량보다 할당 수량이 많을 수 없습니다")
+        raise ValueError("????롮쎗癰귣????醫딅뼣 ??롮쎗??筌띾‘??????곷뮸??덈뼄")
 
     for field, value in updates.items():
         setattr(db_row, field, value)
@@ -1526,7 +1673,7 @@ def _quarter_key(quarter_index: int) -> str:
 def _quarter_label(quarter_index: int) -> str:
     year = quarter_index // 4
     quarter = quarter_index % 4 + 1
-    return f"{str(year)[2:]}년 {quarter}Q"
+    return f"{str(year)[2:]}년 {quarter}분기"
 
 
 def _period_key_label(period: str, index: int) -> tuple[str, str]:
@@ -1560,7 +1707,7 @@ def _period_index_from_month(period: str, month_index: int) -> int:
 
 
 def _software_monthly_cost(subscription_type: str, amount: float) -> float:
-    normalized = str(subscription_type or "월 구독").strip()
+    normalized = str(subscription_type or "연 구독").strip()
     if normalized == "연 구독":
         return amount / 12.0
     return amount
@@ -1577,7 +1724,7 @@ def _software_cost_in_month_span(
     if bucket_end_month_index < start_month_index or bucket_start_month_index > end_month_index:
         return 0.0
 
-    if subscription_type == "영구 구매":
+    if subscription_type == "?怨대럡 ?닌됤꼻":
         return amount if bucket_start_month_index <= start_month_index <= bucket_end_month_index else 0.0
 
     active_start = max(bucket_start_month_index, start_month_index)
@@ -1663,7 +1810,7 @@ def _build_software_projection_points(
                 "start_month_index": start_month_index,
                 "end_month_index": end_month_index,
                 "amount": amount,
-                "subscription_type": str(subscription_type or "월 구독"),
+                "subscription_type": str(subscription_type or "연 구독"),
                 "license_scope": normalize_license_scope(license_scope),
             }
         )
@@ -1708,12 +1855,27 @@ def _build_software_projection_points(
 
     return points
 
-def _build_dashboard_cost_trends(db: Session, today: date, usd_krw_rate: float) -> dict[str, dict[str, list[dict[str, str | float | bool]] | dict[str, list[dict[str, str | float | bool]]]]]:
-    hardware_rows = (
-        db.query(models.Asset.purchase_date, models.Asset.created_at, models.Asset.purchase_cost)
-        .filter(models.Asset.purchase_cost.is_not(None))
-        .all()
+def _build_dashboard_cost_trends(
+    db: Session,
+    today: date,
+    usd_krw_rate: float,
+    *,
+    allowed_org_unit_ids: set[int] | list[int] | None = None,
+    allowed_owner_values: set[str] | list[str] | None = None,
+    allowed_software_usernames: set[str] | list[str] | None = None,
+) -> dict[str, dict[str, list[dict[str, str | float | bool]] | dict[str, list[dict[str, str | float | bool]]]]]:
+    allowed_org_ids = _normalize_int_set(allowed_org_unit_ids)
+    allowed_owner_values_set = _normalize_username_set(allowed_owner_values)
+    allowed_software_users = _normalize_username_set(allowed_software_usernames)
+
+    hardware_query = db.query(models.Asset.purchase_date, models.Asset.created_at, models.Asset.purchase_cost)
+    hardware_query = _apply_asset_access_scope_filter(
+        hardware_query,
+        allowed_org_unit_ids=allowed_org_ids if allowed_org_ids else None,
+        allowed_owner_values=allowed_owner_values_set if allowed_owner_values_set else None,
     )
+    hardware_rows = hardware_query.filter(models.Asset.purchase_cost.is_not(None)).all()
+
     hardware_events: list[tuple[date, float]] = []
     for purchase_date, created_at, purchase_cost in hardware_rows:
         amount = _to_positive_cost(purchase_cost)
@@ -1722,20 +1884,33 @@ def _build_dashboard_cost_trends(db: Session, today: date, usd_krw_rate: float) 
             continue
         hardware_events.append((event_date, amount))
 
-    software_rows = (
-        db.query(
-            models.SoftwareLicense.start_date,
-            models.SoftwareLicense.end_date,
-            models.SoftwareLicense.created_at,
-            models.SoftwareLicense.purchase_cost,
-            models.SoftwareLicense.purchase_currency,
-            models.SoftwareLicense.subscription_type,
-            models.SoftwareLicense.license_scope,
-            models.SoftwareLicense.total_quantity,
-        )
+    software_candidates = (
+        db.query(models.SoftwareLicense)
         .filter(models.SoftwareLicense.purchase_cost.is_not(None))
         .all()
     )
+
+    software_rows: list[tuple[date | None, date | None, datetime, Decimal | float | int | None, str | None, str | None, str | None, int | None]] = []
+    for row in software_candidates:
+        quantity = int(getattr(row, "total_quantity", 0) or 0)
+        if allowed_software_users:
+            quantity = sum(_get_software_assignment_count_map(row, allowed_software_users).values())
+
+        if quantity <= 0:
+            continue
+
+        software_rows.append(
+            (
+                row.start_date,
+                row.end_date,
+                row.created_at,
+                row.purchase_cost,
+                row.purchase_currency,
+                row.subscription_type,
+                row.license_scope,
+                quantity,
+            )
+        )
 
     trends: dict[str, dict[str, list[dict[str, str | float | bool]] | dict[str, list[dict[str, str | float | bool]]]]] = {}
     for period in ("month", "quarter", "year"):
@@ -1755,8 +1930,13 @@ def _build_dashboard_cost_trends(db: Session, today: date, usd_krw_rate: float) 
 
     return trends
 
-
-def get_dashboard_summary(db: Session):
+def get_dashboard_summary(
+    db: Session,
+    *,
+    allowed_org_unit_ids: set[int] | list[int] | None = None,
+    allowed_owner_values: set[str] | list[str] | None = None,
+    allowed_software_usernames: set[str] | list[str] | None = None,
+):
     status_keys = ["사용중", "대기", "폐기필요", "폐기완료"]
     usage_keys = [
         "주장비",
@@ -1768,13 +1948,24 @@ def get_dashboard_summary(db: Session):
         "네트워크장비",
     ]
 
+    allowed_org_ids = _normalize_int_set(allowed_org_unit_ids)
+    allowed_owner_values_set = _normalize_username_set(allowed_owner_values)
+    allowed_software_users = _normalize_username_set(allowed_software_usernames)
+
+    asset_base_query = db.query(models.Asset)
+    asset_base_query = _apply_asset_access_scope_filter(
+        asset_base_query,
+        allowed_org_unit_ids=allowed_org_ids if allowed_org_ids else None,
+        allowed_owner_values=allowed_owner_values_set if allowed_owner_values_set else None,
+    )
+
     status_counts = {key: 0 for key in status_keys}
-    for status, count in db.query(models.Asset.status, func.count(models.Asset.id)).group_by(models.Asset.status).all():
+    for status, count in asset_base_query.with_entities(models.Asset.status, func.count(models.Asset.id)).group_by(models.Asset.status).all():
         normalized = normalize_status(status)
         status_counts[normalized] = status_counts.get(normalized, 0) + count
 
     usage_type_counts = {key: 0 for key in usage_keys}
-    active_assets = db.query(models.Asset).filter(models.Asset.status != "폐기완료")
+    active_assets = asset_base_query.filter(models.Asset.status != "폐기완료")
     for usage_type, count in active_assets.with_entities(models.Asset.usage_type, func.count(models.Asset.id)).group_by(models.Asset.usage_type).all():
         key = normalize_usage_type(usage_type)
         usage_type_counts[key] = usage_type_counts.get(key, 0) + count
@@ -1792,31 +1983,31 @@ def get_dashboard_summary(db: Session):
     upcoming = today + timedelta(days=30)
 
     expiring_warranty_30d = (
-        db.query(func.count(models.Asset.id))
-        .filter(models.Asset.status != "폐기완료")
+        active_assets
         .filter(models.Asset.warranty_expiry.is_not(None))
         .filter(models.Asset.warranty_expiry >= today)
         .filter(models.Asset.warranty_expiry <= upcoming)
+        .with_entities(func.count(models.Asset.id))
         .scalar()
         or 0
     )
 
     overdue_warranty = (
-        db.query(func.count(models.Asset.id))
-        .filter(models.Asset.status != "폐기완료")
+        active_assets
         .filter(models.Asset.warranty_expiry.is_not(None))
         .filter(models.Asset.warranty_expiry < today)
+        .with_entities(func.count(models.Asset.id))
         .scalar()
         or 0
     )
 
     rental_expiring_7d = (
-        db.query(func.count(models.Asset.id))
+        active_assets
         .filter(models.Asset.usage_type == "대여장비")
-        .filter(models.Asset.status != "폐기완료")
         .filter(models.Asset.rental_end_date.is_not(None))
         .filter(models.Asset.rental_end_date >= today)
         .filter(models.Asset.rental_end_date <= today + timedelta(days=7))
+        .with_entities(func.count(models.Asset.id))
         .scalar()
         or 0
     )
@@ -1827,11 +2018,20 @@ def get_dashboard_summary(db: Session):
     software_expired = 0
 
     for sw_row in software_rows:
-        total_quantity = int(sw_row.total_quantity or 0)
-        if total_quantity > 0:
-            software_total += total_quantity
+        if allowed_software_users:
+            assignment_map = _get_software_assignment_count_map(sw_row, allowed_software_users)
+            scoped_quantity = sum(assignment_map.values())
+            if scoped_quantity <= 0:
+                continue
+            software_total += scoped_quantity
+            end_dates = _get_software_assignee_end_dates(sw_row, allowed_software_users)
+        else:
+            total_quantity = int(sw_row.total_quantity or 0)
+            if total_quantity > 0:
+                software_total += total_quantity
+            end_dates = _get_software_assignee_end_dates(sw_row)
 
-        for end_date in _get_software_assignee_end_dates(sw_row):
+        for end_date in end_dates:
             if today <= end_date <= upcoming:
                 software_expiring_30d += 1
             elif end_date < today:
@@ -1840,7 +2040,14 @@ def get_dashboard_summary(db: Session):
     hardware_total = sum(status_counts[key] for key in status_keys if key != "폐기완료")
     exchange_rate_setting = get_exchange_rate_setting(db)
     usd_krw_rate = float(exchange_rate_setting.get("usd_krw") or DEFAULT_USD_KRW_RATE)
-    cost_trends = _build_dashboard_cost_trends(db, today, usd_krw_rate)
+    cost_trends = _build_dashboard_cost_trends(
+        db,
+        today,
+        usd_krw_rate,
+        allowed_org_unit_ids=allowed_org_ids if allowed_org_ids else None,
+        allowed_owner_values=allowed_owner_values_set if allowed_owner_values_set else None,
+        allowed_software_usernames=allowed_software_users if allowed_software_users else None,
+    )
 
     return {
         "total_assets": hardware_total + software_total,
@@ -1856,6 +2063,18 @@ def get_dashboard_summary(db: Session):
         "category_counts": category_counts,
         "cost_trends": cost_trends,
     }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -1,4 +1,4 @@
-﻿from datetime import date, datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -63,6 +63,8 @@ class UserResponse(BaseModel):
     role: RoleType
     is_active: bool
     created_at: datetime
+    is_team_lead: bool = False
+    subordinate_count: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -154,6 +156,7 @@ class DirectoryUserResponse(BaseModel):
     manager_dn: str | None = None
     user_dn: str | None = None
     object_guid: str | None = None
+    is_leader: bool = False
     is_active: bool
     source: str
     synced_at: datetime
@@ -171,6 +174,7 @@ class DirectoryUserCreate(BaseModel):
     manager_dn: str | None = Field(default=None, max_length=500)
     user_dn: str | None = Field(default=None, max_length=500)
     object_guid: str | None = Field(default=None, max_length=80)
+    is_leader: bool = False
 
 
 class DirectoryUserUpdate(BaseModel):
@@ -182,6 +186,7 @@ class DirectoryUserUpdate(BaseModel):
     manager_dn: str | None = Field(default=None, max_length=500)
     user_dn: str | None = Field(default=None, max_length=500)
     object_guid: str | None = Field(default=None, max_length=80)
+    is_leader: bool | None = None
     is_active: bool | None = None
 
 
@@ -195,11 +200,11 @@ class DirectoryUserImportItem(BaseModel):
     manager_dn: str | None = Field(default=None, max_length=500)
     user_dn: str | None = Field(default=None, max_length=500)
     object_guid: str | None = Field(default=None, max_length=80)
+    is_leader: bool = False
 
 
 class DirectoryUserBulkImportRequest(BaseModel):
     users: list[DirectoryUserImportItem] = Field(default_factory=list)
-
 
 class DirectoryUserBulkImportResponse(BaseModel):
     ok: bool
@@ -451,6 +456,23 @@ class SoftwareLicenseKeyResponse(BaseModel):
     license_id: int
     license_key: str = ""
     has_license_key: bool = False
+
+
+class SoftwareAssignmentMemoCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=120)
+    memo: str = Field(min_length=1, max_length=4000)
+
+
+class SoftwareAssignmentMemoResponse(BaseModel):
+    id: int
+    license_id: int
+    username: str
+    memo: str
+    actor_user_id: int | None = None
+    actor_username: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 
@@ -837,6 +859,7 @@ class AssetLabelItem(BaseModel):
     asset_id: int
     asset_name: str
     asset_code: str
+    usage_type: str = ""
     owner: str = "미지정"
     purchase_date: date | None = None
     rental_start_date: date | None = None
@@ -848,6 +871,8 @@ class AssetLabelPreviewResponse(BaseModel):
     branding_logo_path: str = ""
     labels: list[AssetLabelItem] = Field(default_factory=list)
     excluded: list[AssetLabelExcludedItem] = Field(default_factory=list)
+
+
 
 
 

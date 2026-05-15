@@ -250,8 +250,14 @@ def _match_scope_filter(scope_filter: str, normalized_scope: str) -> bool:
     return True
 
 
-def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all") -> dict[str, Any]:
+def build_dashboard_software_cost_summary(
+    db: Session,
+    scope_filter: str = "all",
+    allowed_usernames: set[str] | list[str] | None = None,
+) -> dict[str, Any]:
     normalized_filter = _normalize_scope_filter(scope_filter)
+
+    allowed_users = {str(value or "").strip() for value in (allowed_usernames or []) if str(value or "").strip()}
 
     department_map, display_name_map = _build_directory_user_maps(db)
     team_identity_map = _build_directory_user_team_identity_map(db)
@@ -266,7 +272,7 @@ def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all"
 
     team_buckets: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
-            "team_name": "\ubbf8\ud560\ub2f9",
+            "team_name": "미할당",
             "users": set(),
             "assigned_license_count": 0,
             "monthly_cost": 0.0,
@@ -312,6 +318,13 @@ def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all"
                 if username:
                     assignment_count_by_user[username] += 1
 
+        if allowed_users:
+            assignment_count_by_user = {
+                username: int(count)
+                for username, count in assignment_count_by_user.items()
+                if username in allowed_users
+            }
+
         if not assignment_count_by_user:
             continue
 
@@ -345,7 +358,7 @@ def build_dashboard_software_cost_summary(db: Session, scope_filter: str = "all"
 
     team_summary = [
         {
-            "team_name": str(bucket.get("team_name") or "\ubbf8\ud560\ub2f9"),
+            "team_name": str(bucket.get("team_name") or "미할당"),
             "user_count": len(bucket["users"]),
             "assigned_license_count": _to_int(bucket["assigned_license_count"]),
             "monthly_cost": round(_to_float(bucket["monthly_cost"]), 2),
@@ -499,7 +512,12 @@ def list_software_cost_snapshots(
     }
 
 
-def build_general_license_report_data(db: Session) -> dict[str, Any]:
+def build_general_license_report_data(
+    db: Session,
+    allowed_usernames: set[str] | list[str] | None = None,
+) -> dict[str, Any]:
+    allowed_users = {str(value or "").strip() for value in (allowed_usernames or []) if str(value or "").strip()}
+
     department_map, display_name_map = _build_directory_user_maps(db)
     team_identity_map = _build_directory_user_team_identity_map(db)
     exchange_rate_setting = crud.get_exchange_rate_setting(db)
@@ -508,11 +526,11 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
     general_licenses = [
         row
         for row in db.query(models.SoftwareLicense).order_by(models.SoftwareLicense.product_name.asc(), models.SoftwareLicense.id.asc()).all()
-        if crud.normalize_license_scope(getattr(row, "license_scope", None)) == "\uc77c\ubc18"
+        if crud.normalize_license_scope(getattr(row, "license_scope", None)) == "일반"
     ]
 
     team_buckets: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"team_name": "\ubbf8\ud560\ub2f9", "users": set(), "assigned_quantity": 0, "monthly_cost": 0.0}
+        lambda: {"team_name": "미할당", "users": set(), "assigned_quantity": 0, "monthly_cost": 0.0}
     )
     license_summary: list[dict[str, Any]] = []
     user_detail: list[dict[str, Any]] = []
@@ -522,13 +540,10 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
     total_license_quantity = 0
 
     for license_row in general_licenses:
-        product_name = str(license_row.product_name or "(\uc774\ub984\uc5c6\uc74c)").strip() or "(\uc774\ub984\uc5c6\uc74c)"
+        product_name = str(license_row.product_name or "(이름없음)").strip() or "(이름없음)"
         total_quantity = max(0, _to_int(license_row.total_quantity, default=0))
 
         unit_cost_krw = _to_krw_cost(license_row.purchase_cost, license_row.purchase_currency, usd_krw_rate)
-        total_period_cost = round(unit_cost_krw * total_quantity, 2)
-        total_cost += total_period_cost
-        total_license_quantity += total_quantity
 
         subscription_type = str(license_row.subscription_type or "").strip()
         monthly_unit_cost = _monthly_unit_cost(subscription_type, unit_cost_krw)
@@ -550,6 +565,27 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
                 username = str(row.get("username") or "").strip()
                 if username:
                     assignment_count_by_user[username] += 1
+
+        if allowed_users:
+            assignment_count_by_user = {
+                username: int(count)
+                for username, count in assignment_count_by_user.items()
+                if username in allowed_users
+            }
+            assignee_rows = [
+                row
+                for row in assignee_rows
+                if str(row.get("username") or "").strip() in allowed_users
+            ]
+
+        scoped_assigned_quantity = sum(int(v) for v in assignment_count_by_user.values())
+        effective_quantity = scoped_assigned_quantity if allowed_users else total_quantity
+        if allowed_users and effective_quantity <= 0:
+            continue
+
+        total_period_cost = round(unit_cost_krw * effective_quantity, 2)
+        total_cost += total_period_cost
+        total_license_quantity += effective_quantity
 
         unique_assigned_users: set[str] = set(assignment_count_by_user.keys())
         for row in assignee_rows:
@@ -592,18 +628,18 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
         if team_assignment_counts:
             for bucket_key, seat_count in team_assignment_counts.items():
                 bucket = team_buckets[bucket_key]
-                bucket["team_name"] = team_name_by_bucket.get(bucket_key, "\ubbf8\ud560\ub2f9")
+                bucket["team_name"] = team_name_by_bucket.get(bucket_key, "미할당")
                 bucket["users"].update(team_users_map.get(bucket_key, set()))
                 bucket["assigned_quantity"] += int(seat_count)
                 bucket["monthly_cost"] += float(monthly_unit_cost) * float(seat_count)
 
-        teams_for_license = sorted({team_name_by_bucket.get(k, "???") for k in team_users_map.keys()}) if team_users_map else ["\ubbf8\ud560\ub2f9"]
+        teams_for_license = sorted({team_name_by_bucket.get(k, "-") for k in team_users_map.keys()}) if team_users_map else ["미할당"]
 
         license_summary.append(
             {
                 "license_name": product_name,
                 "team": ", ".join(teams_for_license),
-                "quantity": total_quantity,
+                "quantity": effective_quantity,
                 "user_count": len(unique_assigned_users),
                 "cost": total_period_cost,
                 "end_date": _to_date_text(license_row.end_date),
@@ -612,6 +648,8 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
 
         for row in assignee_rows:
             username = str(row.get("username") or "").strip()
+            if not username:
+                continue
             owned_quantity = max(1, int(assignment_count_by_user.get(username, 1)))
             identity = team_identity_map.get(username)
             if identity:
@@ -635,7 +673,7 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
 
     team_summary = [
         {
-            "team_name": str(bucket.get("team_name") or "\ubbf8\ud560\ub2f9"),
+            "team_name": str(bucket.get("team_name") or "미할당"),
             "user_count": len(bucket["users"]),
             "license_count": int(bucket["assigned_quantity"]),
             "monthly_cost": round(float(bucket["monthly_cost"]), 2),
@@ -648,10 +686,10 @@ def build_general_license_report_data(db: Session) -> dict[str, Any]:
     user_detail.sort(key=lambda row: (row["team"], row["user"], row["license_name"]))
 
     summary = {
-        "\uae30\uc900\uc77c": date.today().isoformat(),
-        "\ucd1d \ube44\uc6a9": round(total_cost, 2),
-        "\ucd1d \uc0ac\uc6a9\uc790 \uc218": len(all_assigned_users),
-        "\ucd1d \ub77c\uc774\uc120\uc2a4 \uc218": total_license_quantity,
+        "기준일": date.today().isoformat(),
+        "총 비용": round(total_cost, 2),
+        "총 사용자 수": len(all_assigned_users),
+        "총 라이선스 수": total_license_quantity,
     }
 
     return {
@@ -924,52 +962,227 @@ def create_general_license_report_html(report_data: dict[str, Any]) -> str:
   <title>일반 라이선스/구독 현황 보고서</title>
   <style>
     :root {{
-      --bg: #f6f8fb;
-      --card: #ffffff;
-      --line: #d8dee9;
-      --title: #1f2d3d;
-      --text: #2f3b4c;
-      --muted: #5f6f82;
-      --accent: #1f628f;
-      --accent-soft: #e8f1fb;
+      --polaris-primary: #0046b9;
+      --polaris-secondary: #1d7ff9;
+      --polaris-primary-dark: #00327f;
+      --polaris-primary-soft: #eaf2ff;
+      --ink: #111111;
+      --ink-secondary: #666666;
+      --ink-muted: #999999;
+      --border: #dddddd;
+      --border-soft: #e8e8e8;
+      --background: #f7f8fa;
+      --canvas: #ffffff;
+      --success: #1e8e3e;
+      --warning: #f9ab00;
+      --error: #d93025;
+      --radius-card: 12px;
+      --radius-field: 8px;
     }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; background: var(--bg); color: var(--text); font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif; }}
-    .container {{ max-width: 1320px; margin: 0 auto; padding: 24px; }}
-    .header {{ display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 16px; }}
-    .title {{ margin: 0; font-size: 28px; color: var(--title); }}
-    .subtitle {{ margin: 6px 0 0; color: var(--muted); }}
-    .tab-nav {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }}
-    .tab-btn {{ border: 1px solid #aac3da; background: #fff; color: #1f4f78; border-radius: 10px; padding: 8px 14px; font-weight: 700; cursor: pointer; }}
-    .tab-btn.active {{ background: var(--accent); color: #fff; border-color: var(--accent); }}
+    body {{
+      margin: 0;
+      background: var(--background);
+      color: var(--ink);
+      font-family: "Pretendard", "Noto Sans KR", "Inter", "Arial", sans-serif;
+    }}
+    body::before {{
+      content: "";
+      position: fixed;
+      inset: 0 0 auto;
+      height: 220px;
+      background: linear-gradient(180deg, rgba(234, 242, 255, 0.72), rgba(247, 248, 250, 0));
+      pointer-events: none;
+      z-index: -1;
+    }}
+    .container {{ max-width: 1320px; margin: 0 auto; padding: 32px 24px 40px; }}
+    .header {{
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }}
+    .title {{
+      margin: 0;
+      font-size: clamp(26px, 3vw, 34px);
+      color: var(--polaris-primary);
+      font-weight: 800;
+      letter-spacing: -0.035em;
+    }}
+    .subtitle {{ margin: 8px 0 0; color: var(--ink-secondary); }}
+    .report-badge {{
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: var(--polaris-primary-soft);
+      color: var(--polaris-primary);
+      font-size: 12px;
+      font-weight: 800;
+      margin-bottom: 10px;
+    }}
+    .tab-nav {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: 0 8px 24px rgba(17, 17, 17, 0.06);
+      backdrop-filter: blur(10px);
+    }}
+    .tab-btn {{
+      min-height: 42px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--ink-secondary);
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-weight: 800;
+      cursor: pointer;
+      letter-spacing: -0.01em;
+    }}
+    .tab-btn:hover {{ background: var(--polaris-primary-soft); color: var(--polaris-primary); }}
+    .tab-btn.active {{
+      background: var(--polaris-primary);
+      color: var(--canvas);
+      border-color: var(--polaris-primary);
+      box-shadow: 0 6px 16px rgba(0, 70, 185, 0.18);
+    }}
     .tab-panel {{ display: none; }}
     .tab-panel.active {{ display: block; }}
-    .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 0 0 20px; }}
-    .summary-card {{ background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }}
-    .summary-card h3 {{ margin: 0; font-size: 13px; color: var(--muted); font-weight: 700; }}
-    .summary-card p {{ margin: 8px 0 0; font-size: 24px; line-height: 1.2; color: var(--title); font-weight: 800; }}
-    .section {{ background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }}
-    .section h2 {{ margin: 0 0 10px; color: var(--title); font-size: 18px; }}
-    .table-wrap {{ overflow-x: auto; }}
-    table {{ width: 100%; border-collapse: collapse; min-width: 860px; }}
-    th, td {{ border: 1px solid var(--line); padding: 8px 10px; font-size: 13px; text-align: left; vertical-align: middle; }}
-    thead th {{ background: #eef3f9; color: var(--title); font-weight: 700; position: sticky; top: 0; z-index: 1; }}
-    tbody tr:nth-child(even) {{ background: #fbfcff; }}
-    .empty {{ text-align: center; color: var(--muted); }}
-    .footer-note {{ color: var(--muted); font-size: 12px; margin-top: 8px; }}
-    .mono {{ font-family: "Consolas", "Menlo", monospace; }}
-    .subtab-nav {{ display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }}
-    .subtab-btn {{ border: 1px solid #b6c8da; background: #fff; color: #2a4f72; border-radius: 8px; padding: 6px 10px; font-weight: 700; cursor: pointer; font-size: 12px; }}
-    .subtab-btn.active {{ background: var(--accent-soft); border-color: #86abd0; color: #1f4f78; }}
+    .summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin: 0 0 20px;
+    }}
+    .summary-card {{
+      background: var(--canvas);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 16px;
+      box-shadow: 0 1px 2px rgba(17, 17, 17, 0.04);
+    }}
+    .summary-card h3 {{ margin: 0; font-size: 13px; color: var(--ink-secondary); font-weight: 800; }}
+    .summary-card p {{ margin: 8px 0 0; font-size: 24px; line-height: 1.2; color: var(--polaris-primary); font-weight: 800; }}
+    .section {{
+      background: var(--canvas);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 2px rgba(17, 17, 17, 0.04);
+    }}
+    .section h2 {{
+      margin: 0 0 14px;
+      color: var(--ink);
+      font-size: 19px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }}
+    .section h2::after {{
+      content: "";
+      display: block;
+      width: 40px;
+      height: 2px;
+      margin-top: 8px;
+      background: var(--polaris-primary);
+    }}
+    .table-wrap {{
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      background: var(--canvas);
+    }}
+    table {{
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      min-width: 860px;
+      font-variant-numeric: tabular-nums;
+    }}
+    th, td {{
+      border-bottom: 1px solid var(--border-soft);
+      padding: 10px 12px;
+      font-size: 13px;
+      text-align: left;
+      vertical-align: middle;
+      color: var(--ink);
+      height: 44px;
+    }}
+    thead th {{
+      background: var(--polaris-primary-soft);
+      color: var(--polaris-primary);
+      font-weight: 800;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      white-space: nowrap;
+      border-bottom: 1px solid #cbdcff;
+    }}
+    tbody tr:nth-child(even) {{ background: #fbfcfe; }}
+    tbody tr:hover {{ background: var(--polaris-primary-soft); }}
+    tbody tr:last-child td {{ border-bottom: none; }}
+    td:first-child, th:first-child {{ padding-left: 16px; }}
+    td:last-child, th:last-child {{ padding-right: 16px; }}
+    .empty {{ text-align: center; color: var(--ink-secondary); }}
+    .footer-note {{ color: var(--ink-secondary); font-size: 12px; margin-top: 10px; }}
+    .mono {{ font-family: "JetBrains Mono", "D2Coding", "Consolas", monospace; }}
+    .subtab-nav {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+      padding: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      background: var(--canvas);
+      width: fit-content;
+      max-width: 100%;
+    }}
+    .subtab-btn {{
+      min-height: 34px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--ink-secondary);
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-weight: 800;
+      cursor: pointer;
+      font-size: 12px;
+    }}
+    .subtab-btn:hover {{ background: var(--polaris-primary-soft); color: var(--polaris-primary); }}
+    .subtab-btn.active {{
+      background: var(--polaris-primary-soft);
+      border-color: transparent;
+      color: var(--polaris-primary);
+      box-shadow: inset 0 0 0 1px rgba(0, 70, 185, 0.18);
+    }}
     .team-panel {{ display: none; }}
     .team-panel.active {{ display: block; }}
-    .team-title {{ margin: 0 0 10px; font-size: 16px; color: var(--title); }}
+    .team-title {{ margin: 0 0 12px; font-size: 16px; color: var(--ink); font-weight: 800; }}
+    @media (max-width: 760px) {{
+      .container {{ padding: 20px 16px 32px; }}
+      .header {{ align-items: flex-start; flex-direction: column; }}
+      .tab-nav {{ position: static; border-radius: var(--radius-card); }}
+      .tab-btn, .subtab-btn {{ flex: 1 1 auto; }}
+      .subtab-nav {{ width: 100%; }}
+      .section {{ padding: 16px; }}
+    }}
   </style>
 </head>
 <body>
   <main class=\"container\">
     <header class=\"header\">
       <div>
+        <span class=\"report-badge\">Polaris Office Report</span>
         <h1 class=\"title\">일반 라이선스/구독 현황 보고서</h1>
         <p class=\"subtitle\">기준일 <span class=\"mono\">{e(summary.get('기준일', ''))}</span> / 내부 검토용 HTML 리포트</p>
       </div>
@@ -1060,6 +1273,12 @@ def create_general_license_report_html(report_data: dict[str, Any]) -> str:
 </body>
 </html>
 """
+
+
+
+
+
+
 
 
 

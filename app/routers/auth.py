@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas, security
 from ..database import get_db
+from ..services import access_scope_service
 
 router = APIRouter()
 
@@ -28,5 +29,19 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/me", response_model=schemas.UserResponse, summary="내 계정 조회", tags=["인증"])
-def get_me(current_user: models.User = Depends(security.get_current_user)):
-    return current_user
+def get_me(
+    current_user: models.AppAccount = Depends(security.get_current_user),
+    db: Session = Depends(get_db),
+):
+    scope = access_scope_service.build_user_access_scope(db, current_user)
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "role": current_user.role,
+        "is_active": current_user.is_active,
+        "created_at": current_user.created_at,
+        "is_team_lead": bool(scope.is_team_lead and not scope.is_admin),
+        "subordinate_count": len(scope.managed_usernames),
+    }
+
+

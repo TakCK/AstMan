@@ -1,6 +1,7 @@
 ﻿"""Service package for application business logic."""
 
 __all__: list[str] = [
+    "access_scope_service",
     "asset_service",
     "branding_service",
     "csv_import_service",
@@ -14,3 +15,5 @@ __all__: list[str] = [
     "system_info_service",
     "user_service",
 ]
+
+

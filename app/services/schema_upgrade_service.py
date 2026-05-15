@@ -8,6 +8,14 @@ def run_schema_upgrade(engine) -> None:
         return
 
     statements = [
+        "CREATE TABLE IF NOT EXISTS app_accounts ("
+        "id SERIAL PRIMARY KEY, "
+        "username VARCHAR(100) NOT NULL UNIQUE, "
+        "password_hash VARCHAR(255) NOT NULL, "
+        "role VARCHAR(20) NOT NULL DEFAULT 'user', "
+        "is_active BOOLEAN NOT NULL DEFAULT TRUE, "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+        ")",
         "CREATE TABLE IF NOT EXISTS organization_units ("
         "id SERIAL PRIMARY KEY, "
         "name VARCHAR(200) NOT NULL UNIQUE, "
@@ -43,16 +51,49 @@ def run_schema_upgrade(engine) -> None:
         "ALTER TABLE directory_users ADD COLUMN IF NOT EXISTS user_dn VARCHAR(500)",
         "ALTER TABLE directory_users ADD COLUMN IF NOT EXISTS object_guid VARCHAR(80)",
         "ALTER TABLE directory_users ADD COLUMN IF NOT EXISTS org_unit_id INTEGER",
+        "ALTER TABLE directory_users ADD COLUMN IF NOT EXISTS is_leader BOOLEAN DEFAULT FALSE",
+        "CREATE TABLE IF NOT EXISTS software_license_assignment_memos ("
+        "id SERIAL PRIMARY KEY, "
+        "license_id INTEGER NOT NULL, "
+        "username VARCHAR(120) NOT NULL, "
+        "memo TEXT NOT NULL, "
+        "actor_user_id INTEGER NULL, "
+        "actor_username VARCHAR(100) NOT NULL, "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+        ")",
     ]
 
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
 
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_app_accounts_username ON app_accounts (username)"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_assets_asset_code ON assets (asset_code)"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_organization_units_name ON organization_units (name)"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_organization_units_code ON organization_units (code)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_sw_assignment_memos_license_user ON software_license_assignment_memos (license_id, username, created_at)"))
         conn.execute(text("ALTER TABLE assets ALTER COLUMN serial_number DROP NOT NULL"))
+
+        conn.execute(
+            text(
+                "DO $$ BEGIN "
+                "IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users') THEN "
+                "INSERT INTO app_accounts (id, username, password_hash, role, is_active, created_at) "
+                "SELECT u.id, u.username, u.password_hash, u.role, u.is_active, COALESCE(u.created_at, now()) "
+                "FROM users u "
+                "ON CONFLICT (username) DO NOTHING; "
+                "END IF; END $$;"
+            )
+        )
+        conn.execute(
+            text(
+                "SELECT setval(" 
+                "pg_get_serial_sequence('app_accounts', 'id'), "
+                "COALESCE((SELECT MAX(id) FROM app_accounts), 1), "
+                "TRUE"
+                ")"
+            )
+        )
 
         conn.execute(
             text(
@@ -136,3 +177,5 @@ def run_schema_upgrade(engine) -> None:
         )
         conn.execute(text("UPDATE software_licenses SET license_type = COALESCE(NULLIF(subscription_type, ''), '연 구독')"))
         conn.execute(text("UPDATE software_licenses SET allow_multiple_assignments = COALESCE(allow_multiple_assignments, FALSE)"))
+        conn.execute(text("UPDATE directory_users SET is_leader = COALESCE(is_leader, FALSE)"))
+

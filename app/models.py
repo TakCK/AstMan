@@ -1,4 +1,4 @@
-﻿from datetime import date, datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
@@ -9,6 +9,17 @@ from .database import Base
 
 class User(Base):
     __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AppAccount(Base):
+    __tablename__ = "app_accounts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
@@ -49,6 +60,7 @@ class DirectoryUser(Base):
     manager_dn: Mapped[str | None] = mapped_column(String(500), nullable=True)
     user_dn: Mapped[str | None] = mapped_column(String(500), nullable=True)
     object_guid: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    is_leader: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="ldap")
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -135,6 +147,18 @@ class SoftwareLicense(Base):
     )
 
 
+class SoftwareLicenseAssignmentMemo(Base):
+    __tablename__ = "software_license_assignment_memos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    license_id: Mapped[int] = mapped_column(ForeignKey("software_licenses.id", ondelete="CASCADE"), nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    memo: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actor_username: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class AssetHistory(Base):
     __tablename__ = "asset_history"
 
@@ -162,3 +186,5 @@ class SoftwareCostSnapshot(Base):
     monthly_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
     annual_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+

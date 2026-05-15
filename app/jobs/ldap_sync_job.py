@@ -1,4 +1,4 @@
-﻿import threading
+import threading
 
 from ..database import SessionLocal
 from ..services import ldap_service

@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import hashlib
 import os
 import threading
@@ -11,9 +11,10 @@ from fastapi import HTTPException
 from ldap3 import Connection, SUBTREE, Server
 from ldap3.core.exceptions import LDAPException
 from ldap3.utils.conv import escape_filter_chars
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import crud, schemas
+from .. import crud, models, schemas
 from . import user_service
 
 LDAP_SYNC_SCHEDULE_KEY = "ldap_sync_schedule"
@@ -300,6 +301,174 @@ def _first_attr_value(values):
     return _to_text(values)
 
 
+def _unique_attr_names(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        key = str(value or "").strip()
+        if not key or key in result:
+            continue
+        result.append(key)
+    return result
+
+
+def _ldap_bind_with_identity(
+    *,
+    server_url: str,
+    use_ssl: bool,
+    port: int | None,
+    bind_identity: str,
+    bind_password: str,
+) -> bool:
+    identity = str(bind_identity or "").strip()
+    password = str(bind_password or "")
+    if not identity or not password:
+        return False
+
+    conn = None
+    try:
+        host, resolved_ssl, resolved_port = _resolve_ldap_server(server_url, use_ssl, port)
+        server = Server(host=host, port=resolved_port, use_ssl=resolved_ssl, connect_timeout=8)
+        conn = Connection(server, user=identity, password=password, auto_bind=True, receive_timeout=12)
+        return True
+    except (LDAPException, ValueError):
+        return False
+    finally:
+        if conn is not None:
+            conn.unbind()
+
+
+def _ldap_find_user_for_auth(db: Session, username: str, schedule: dict) -> dict | None:
+    service_password = _ensure_runtime_bind_password(db)
+    if not service_password:
+        return None
+
+    conn = None
+    try:
+        host, resolved_ssl, resolved_port = _resolve_ldap_server(
+            schedule["server_url"],
+            schedule["use_ssl"],
+            schedule["port"],
+        )
+        server = Server(host=host, port=resolved_port, use_ssl=resolved_ssl, connect_timeout=8)
+        conn = Connection(
+            server,
+            user=schedule["bind_dn"],
+            password=service_password,
+            auto_bind=True,
+            receive_timeout=12,
+        )
+
+        uid_attr = schedule.get("user_id_attribute") or "sAMAccountName"
+        name_attr = schedule.get("user_name_attribute") or "displayName"
+        mail_attr = schedule.get("user_email_attribute") or "mail"
+        dept_attr = schedule.get("user_department_attribute") or "department"
+        title_attr = schedule.get("user_title_attribute") or "title"
+        manager_attr = schedule.get("manager_dn_attribute") or "manager"
+        dn_attr = schedule.get("user_dn_attribute") or "distinguishedName"
+        guid_attr = schedule.get("user_guid_attribute") or "objectGUID"
+
+        uid_attrs = _unique_attr_names([uid_attr, "sAMAccountName", "uid", "userPrincipalName"])
+        name_attrs = _unique_attr_names([name_attr, "displayName", "cn", "name"])
+        mail_attrs = _unique_attr_names([mail_attr, "mail", "userPrincipalName"])
+        dept_attrs = _unique_attr_names([dept_attr, "department"])
+        title_attrs = _unique_attr_names([title_attr, "title"])
+        manager_attrs = _unique_attr_names([manager_attr, "manager"])
+        dn_attrs = _unique_attr_names([dn_attr, "distinguishedName"])
+        guid_attrs = _unique_attr_names([guid_attr, "objectGUID"])
+
+        escaped_username = escape_filter_chars(username)
+        exact_parts = [f"({attr}={escaped_username})" for attr in [*uid_attrs, *mail_attrs]]
+        search_filter = f"(&(&(objectClass=user)(!(objectClass=computer)))(|{''.join(exact_parts)}))"
+        attributes = _unique_attr_names([*uid_attrs, *name_attrs, *mail_attrs, *dept_attrs, *title_attrs, *manager_attrs, *dn_attrs, *guid_attrs])
+
+        conn.search(
+            search_base=schedule["base_dn"],
+            search_filter=search_filter,
+            search_scope=SUBTREE,
+            attributes=attributes,
+            size_limit=1,
+        )
+        if not conn.entries:
+            return None
+
+        entry = conn.entries[0]
+        attrs = entry.entry_attributes_as_dict
+
+        def _first_from(attr_names: list[str]) -> str | None:
+            for attr_name in attr_names:
+                value = _first_attr_value(attrs.get(attr_name))
+                if value:
+                    return value
+            return None
+
+        resolved_username = _first_from(uid_attrs) or username
+        entry_dn = str(entry.entry_dn)
+        return {
+            "dn": entry_dn,
+            "username": resolved_username,
+            "display_name": _first_from(name_attrs) or resolved_username,
+            "email": _first_from(mail_attrs),
+            "department": _first_from(dept_attrs),
+            "title": _first_from(title_attrs),
+            "manager_dn": _first_from(manager_attrs),
+            "user_dn": _first_from(dn_attrs) or entry_dn,
+            "object_guid": _first_from(guid_attrs),
+        }
+    except (LDAPException, ValueError):
+        return None
+    finally:
+        if conn is not None:
+            conn.unbind()
+
+
+def authenticate_directory_user(db: Session, username: str, password: str) -> bool:
+    clean_username = str(username or "").strip()
+    clean_password = str(password or "")
+    if not clean_username or not clean_password:
+        return False
+
+    directory_user = (
+        db.query(models.DirectoryUser)
+        .filter(func.lower(models.DirectoryUser.username) == clean_username.lower())
+        .first()
+    )
+    if not directory_user or not directory_user.is_active:
+        return False
+
+    schedule = _get_sync_schedule(db)
+    if not schedule.get("server_url"):
+        return False
+
+    ldap_user = _ldap_find_user_for_auth(db, clean_username, schedule)
+    user_dn = str(getattr(directory_user, "user_dn", "") or "").strip()
+    email = str(getattr(directory_user, "email", "") or "").strip()
+
+    identities = []
+    for candidate in [
+        ldap_user.get("user_dn") if ldap_user else None,
+        ldap_user.get("dn") if ldap_user else None,
+        user_dn,
+        email,
+        str(directory_user.username or "").strip(),
+        clean_username,
+    ]:
+        text = str(candidate or "").strip()
+        if text and text not in identities:
+            identities.append(text)
+
+    for identity in identities:
+        if _ldap_bind_with_identity(
+            server_url=schedule["server_url"],
+            use_ssl=schedule["use_ssl"],
+            port=schedule["port"],
+            bind_identity=identity,
+            bind_password=clean_password,
+        ):
+            return True
+
+    return False
+
+
 def _ldap_fetch_users(
     *,
     server_url: str,
@@ -333,15 +502,6 @@ def _ldap_fetch_users(
         manager_attr = manager_dn_attribute.strip() or "manager"
         dn_attr = user_dn_attribute.strip() or "distinguishedName"
         guid_attr = user_guid_attribute.strip() or "objectGUID"
-
-        def _unique_attr_names(values: list[str]) -> list[str]:
-            result: list[str] = []
-            for value in values:
-                key = str(value or "").strip()
-                if not key or key in result:
-                    continue
-                result.append(key)
-            return result
 
         uid_attrs = _unique_attr_names([uid_attr, "sAMAccountName", "uid", "userPrincipalName"])
         name_attrs = _unique_attr_names([name_attr, "displayName", "cn", "name"])
@@ -581,6 +741,3 @@ def ldap_sync_now(payload: schemas.LdapSyncNowRequest, db: Session):
 
         _set_sync_state(db, last_error="LDAP 서버 주소를 확인해주세요", last_result=None)
         raise HTTPException(status_code=400, detail="LDAP 서버 주소를 확인해주세요")
-
-
-

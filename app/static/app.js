@@ -47,7 +47,7 @@ const DEFAULTS = {
     service_title: "AstMan ITAM",
     service_subtitle: "하드웨어 자산과 소프트웨어 라이선스를 통합 관리하는 오픈소스 웹 애플리케이션",
     company_logo_path: "/static/branding/default_logo.png",
-    footer_text: "AstMan © 2026 TakCK · MIT License",
+    footer_text: "AstMan ⓒ 2026 TakCK · MIT License",
   },
   systemInfo: {
     service_name: "AstMan ITAM",
@@ -735,6 +735,7 @@ const state = {
   dashboardSoftwareCostScope: "all",
   dashboardSoftwareCostSummary: null,
   settingsSubtab: "hardware",
+  settingsHardwareSubtab: "code",
   settingsAccountsSubtab: "users",
   orgIntegrity: null,
   selectedAssetIds: new Set(),
@@ -841,6 +842,7 @@ const tabs = document.getElementById("tabs");
 const hardwareSubtabs = document.getElementById("hardwareSubtabs");
 const softwareSubtabs = document.getElementById("softwareSubtabs");
 const settingsSubtabs = document.getElementById("settingsSubtabs");
+const settingsHardwareSubtabs = document.getElementById("settingsHardwareSubtabs");
 const settingsAccountsSubtabs = document.getElementById("settingsAccountsSubtabs");
 const settingsMiscSubtabs = document.getElementById("settingsMiscSubtabs");
 const settingsMailSubtabs = document.getElementById("settingsMailSubtabs");
@@ -1711,9 +1713,13 @@ function renderUsersTable(view = "user") {
             <td>${row.is_active ? "활성" : "비활성"}</td>
             <td>${new Date(row.created_at).toLocaleString()}</td>
             <td>
-              <button type="button" class="mini-btn user-toggle-btn" data-id="${row.id}" data-role="admin" data-active="${row.is_active ? "1" : "0"}">
-                ${row.is_active ? "비활성" : "활성"} 전환
-              </button>
+              <div class="inline-edit">
+                <input class="admin-password-inline" data-id="${row.id}" type="password" minlength="8" autocomplete="new-password" placeholder="새 비밀번호(8자 이상)" />
+                <button type="button" class="mini-btn admin-password-save-btn" data-id="${row.id}">비밀번호 변경</button>
+                <button type="button" class="mini-btn user-toggle-btn" data-id="${row.id}" data-role="admin" data-active="${row.is_active ? "1" : "0"}">
+                  ${row.is_active ? "비활성" : "활성"} 전환
+                </button>
+              </div>
             </td>
           </tr>
         `,
@@ -1732,9 +1738,10 @@ function renderUsersTable(view = "user") {
     .map((row) => {
       const orgDisplay = getOrgDisplayName(row?.org_unit_name, row?.department) || "-";
       const orgOptions = buildOrgUnitOptionsHtml(String(row?.org_unit_id || ""), "조직 선택(선택)");
+      const usernameValue = escapeHtml(row.username || "");
       return `
         <tr>
-          <td>${escapeHtml(row.username)}</td>
+          <td>${usernameValue}</td>
           <td>${escapeHtml(row.display_name || "-")}</td>
           <td>${escapeHtml(row.email || "-")}</td>
           <td>${escapeHtml(orgDisplay)}</td>
@@ -1875,14 +1882,41 @@ function renderOrgChart(rows = state.managedUsers || []) {
     const display = String(node?.row?.display_name || node?.row?.username || "-");
     const username = String(node?.row?.username || "-");
     const department = getOrgChartDepartmentName(node?.row);
+    const isActive = Boolean(node?.row?.is_active);
+    const hasChildren = Array.isArray(node?.children) && node.children.length > 0;
+    const isManualLeader = Boolean(node?.row?.is_leader);
+    const isEffectiveLeader = hasChildren || isManualLeader;
+    const leaderType = hasChildren ? "조직 리더" : isManualLeader ? "수동 리더" : "일반";
+    const leaderBadgeClass = isEffectiveLeader ? "leader" : "normal";
+    const leaderToggleHtml =
+      isAdminUser() && Number(node?.row?.id || 0) > 0
+        ? `<div class="org-node-actions">
+             <button
+               type="button"
+               class="mini-btn org-leader-toggle-btn"
+               data-id="${Number(node.row.id)}"
+               data-is-leader="${isManualLeader ? "1" : "0"}"
+               data-display-name="${escapeHtml(display)}"
+             >
+               ${isManualLeader ? "수동 리더 해제" : "수동 리더 지정"}
+             </button>
+           </div>`
+        : "";
+    const cardClass = `org-node-card ${isActive ? "active" : "inactive"}`;
 
     if (visited.has(node.key)) {
       return `
         <li class="org-tree-node">
-          <article class="org-node-card cycle">
-            <div class="org-node-name">${escapeHtml(display)}</div>
+          <article class="${cardClass} cycle">
+            <div class="org-node-top">
+              <div class="org-node-name">${escapeHtml(display)}</div>
+              <div class="org-node-state">${isActive ? "활성" : "비활성"}</div>
+            </div>
             <div class="org-node-meta">ID: ${escapeHtml(username)}</div>
             <div class="org-node-meta">\uBD80\uC11C: ${escapeHtml(department)}</div>
+            <div class="org-node-meta">\uAD8C\uD55C: ${escapeHtml(leaderType)}</div>
+            <div class="org-node-badge ${leaderBadgeClass}">${isEffectiveLeader ? "팀장/Leader" : "일반 사용자"}</div>
+            ${leaderToggleHtml}
           </article>
         </li>
       `;
@@ -1896,10 +1930,16 @@ function renderOrgChart(rows = state.managedUsers || []) {
 
     return `
       <li class="org-tree-node">
-        <article class="org-node-card">
-          <div class="org-node-name">${escapeHtml(display)}</div>
+        <article class="${cardClass}">
+          <div class="org-node-top">
+            <div class="org-node-name">${escapeHtml(display)}</div>
+            <div class="org-node-state">${isActive ? "활성" : "비활성"}</div>
+          </div>
           <div class="org-node-meta">ID: ${escapeHtml(username)}</div>
           <div class="org-node-meta">\uBD80\uC11C: ${escapeHtml(department)}</div>
+          <div class="org-node-meta">\uAD8C\uD55C: ${escapeHtml(leaderType)}</div>
+          <div class="org-node-badge ${leaderBadgeClass}">${isEffectiveLeader ? "팀장/Leader" : "일반 사용자"}</div>
+          ${leaderToggleHtml}
         </article>
         ${childrenHtml}
       </li>
@@ -2086,6 +2126,52 @@ function isAdminUser() {
   return String(state.user?.role || "").trim().toLowerCase() === "admin";
 }
 
+function isTeamLeadUser() {
+  return Boolean(state.user?.is_team_lead) && !isAdminUser();
+}
+
+function canManageSoftware() {
+  return isAdminUser() || isTeamLeadUser();
+}
+
+function requireAdminAction() {
+  if (isAdminUser()) return true;
+  showToast("관리자만 변경할 수 있습니다.");
+  return false;
+}
+
+function requireSoftwareManagerAction() {
+  if (canManageSoftware()) return true;
+  showToast("관리자 또는 팀장만 변경할 수 있습니다.");
+  return false;
+}
+
+function activateSettingsHardwareSubtab(subtabName = "code") {
+  const isAdmin = isAdminUser();
+  let target = String(subtabName || "code");
+  const allowed = new Set(["code", "defaults", "categories", "orgs", "integrity", "rules"]);
+  const adminOnly = new Set(["orgs", "integrity"]);
+
+  if (!allowed.has(target)) {
+    target = "code";
+  }
+
+  if (!isAdmin && adminOnly.has(target)) {
+    target = "code";
+  }
+
+  state.settingsHardwareSubtab = target;
+
+  document.querySelectorAll(".subtab-btn[data-settings-hardware-tab]").forEach((button) => {
+    const isActive = button.dataset.settingsHardwareTab === target;
+    button.classList.toggle("active", isActive);
+  });
+
+  document.querySelectorAll(".settings-hardware-subtab-section").forEach((section) => {
+    section.classList.toggle("active", section.id === `settings-hardware-subtab-${target}`);
+  });
+}
+
 function activateSettingsAccountsSubtab(subtabName = "users") {
   let target = String(subtabName || "users");
   const allowed = new Set(["users", "users-inactive", "admins", "orgchart"]);
@@ -2184,6 +2270,9 @@ function activateSettingsSubtab(subtabName = "hardware") {
     section.classList.toggle("active", section.id === `settings-subtab-${target}`);
   });
 
+  if (target === "hardware") {
+    activateSettingsHardwareSubtab(state.settingsHardwareSubtab || "code");
+  }
   if (target === "accounts") {
     activateSettingsAccountsSubtab(state.settingsAccountsSubtab || "users");
   }
@@ -2197,11 +2286,19 @@ async function loadSettingsSubtabData(subtabName = "hardware") {
   const target = String(subtabName || "hardware");
 
   if (target === "hardware") {
-    await loadOrgUnits(true);
-    if (isAdminUser()) {
-      await loadOrgIntegrityCheck();
-    } else {
-      renderOrgIntegrityReport(null);
+    const hardwareSubtab = String(state.settingsHardwareSubtab || "code");
+    const needsOrgData = hardwareSubtab === "orgs" || hardwareSubtab === "integrity";
+
+    if (needsOrgData) {
+      await loadOrgUnits(true);
+    }
+
+    if (hardwareSubtab === "integrity") {
+      if (isAdminUser()) {
+        await loadOrgIntegrityCheck();
+      } else {
+        renderOrgIntegrityReport(null);
+      }
     }
     return;
   }
@@ -2248,13 +2345,27 @@ async function loadSettingsSubtabData(subtabName = "hardware") {
 
 function applyRoleTabVisibility() {
   const isAdmin = isAdminUser();
+  const canManageSw = canManageSoftware();
+  const settingsTabButton = document.querySelector('.tab-btn[data-tab="settings"]');
+  if (settingsTabButton) {
+    settingsTabButton.classList.toggle("hidden", !isAdmin);
+  }
 
   document.querySelectorAll("[data-admin-only]").forEach((el) => {
     el.classList.toggle("hidden", !isAdmin);
   });
 
+  document.querySelectorAll("[data-software-manager-only]").forEach((el) => {
+    el.classList.toggle("hidden", !canManageSw);
+  });
+
   if (!isAdmin && adminSettingsTabs.has(state.settingsSubtab)) {
     state.settingsSubtab = "hardware";
+  }
+
+  if (!isAdmin && state.activeMainTab === "settings") {
+    activateTab("dashboard");
+    return;
   }
 
   activateSettingsSubtab(state.settingsSubtab || "hardware");
@@ -2635,7 +2746,7 @@ function updateAuthView() {
   appPanel.classList.toggle("hidden", !loggedIn);
 
   if (loggedIn) {
-    const roleLabel = state.user.role === "admin" ? "관리자" : "사용자";
+    const roleLabel = state.user.role === "admin" ? "관리자" : state.user.is_team_lead ? "팀장" : "사용자";
     userInfo.textContent = `${state.user.username} (${roleLabel})`;
   } else {
     userInfo.textContent = "로그인 필요";
@@ -2653,7 +2764,11 @@ function setSectionActive(tabName) {
 }
 
 function activateHardwareSubtab(subtabName = "assets") {
-  const target = hardwareTabKeys.has(subtabName) ? subtabName : "assets";
+  const adminOnlyTabs = new Set(["add", "addcsv"]);
+  let target = hardwareTabKeys.has(subtabName) ? subtabName : "assets";
+  if (!isAdminUser() && adminOnlyTabs.has(target)) {
+    target = "assets";
+  }
 
   state.activeMainTab = "hardware";
   state.hardwareSubtab = target;
@@ -2673,7 +2788,15 @@ function activateHardwareSubtab(subtabName = "assets") {
 }
 
 function activateSoftwareSubtab(subtabName = "list") {
-  const target = softwareTabKeys.has(subtabName) ? subtabName : "list";
+  const managerTabs = new Set(["assignment", "editor"]);
+  const adminOnlyTabs = new Set(["import"]);
+  let target = softwareTabKeys.has(subtabName) ? subtabName : "list";
+  if (!canManageSoftware() && managerTabs.has(target)) {
+    target = "list";
+  }
+  if (!isAdminUser() && adminOnlyTabs.has(target)) {
+    target = "list";
+  }
   const previous = state.softwareSubtab;
 
   state.activeMainTab = "software";
@@ -2735,6 +2858,160 @@ function activateTab(tabName) {
   hardwareSubtabs?.classList.add("hidden");
   softwareSubtabs?.classList.add("hidden");
   setSectionActive(target);
+}
+
+function normalizeRouteValue(value, allowed, fallback) {
+  const text = String(value || "").trim();
+  return allowed.has(text) ? text : fallback;
+}
+
+function normalizeAppRoute(route = {}) {
+  const rawTab = String(route.tab || route.view || "dashboard").trim();
+  let tab = mainTabKeys.has(rawTab) ? rawTab : "dashboard";
+  if (!isAdminUser() && tab === "settings") {
+    tab = "dashboard";
+  }
+
+  const hardware = normalizeRouteValue(route.hardware || route.hw, hardwareTabKeys, "assets");
+  const software = normalizeRouteValue(route.software || route.sw, softwareTabKeys, "list");
+  const settings = normalizeRouteValue(route.settings, new Set([...publicSettingsTabs, ...adminSettingsTabs]), "hardware");
+  const settingsHardware = normalizeRouteValue(route.settingsHardware || route.hwSettings, new Set(["code", "defaults", "categories", "orgs", "integrity", "rules"]), "code");
+  const settingsAccounts = normalizeRouteValue(route.settingsAccounts || route.accountSettings, new Set(["users", "users-inactive", "admins", "orgchart"]), "users");
+  const settingsMisc = normalizeRouteValue(route.settingsMisc || route.miscSettings, new Set(["ldap", "mail", "branding", "system-info"]), "ldap");
+  const settingsMail = normalizeRouteValue(route.settingsMail || route.mailSettings, new Set(["smtp", "admin", "user"]), "smtp");
+
+  return {
+    tab,
+    hardware,
+    software,
+    settings,
+    settingsHardware,
+    settingsAccounts,
+    settingsMisc,
+    settingsMail,
+  };
+}
+
+function parseAppRouteFromLocation() {
+  const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+  const params = new URLSearchParams(hash);
+  return normalizeAppRoute({
+    tab: params.get("view") || params.get("tab") || "dashboard",
+    hardware: params.get("hardware") || params.get("hw"),
+    software: params.get("software") || params.get("sw"),
+    settings: params.get("settings"),
+    settingsHardware: params.get("settingsHardware") || params.get("hwSettings"),
+    settingsAccounts: params.get("settingsAccounts") || params.get("accountSettings"),
+    settingsMisc: params.get("settingsMisc") || params.get("miscSettings"),
+    settingsMail: params.get("settingsMail") || params.get("mailSettings"),
+  });
+}
+
+function getCurrentAppRoute() {
+  return normalizeAppRoute({
+    tab: state.activeMainTab,
+    hardware: state.hardwareSubtab,
+    software: state.softwareSubtab,
+    settings: state.settingsSubtab,
+    settingsHardware: state.settingsHardwareSubtab,
+    settingsAccounts: state.settingsAccountsSubtab,
+    settingsMisc: state.settingsMiscSubtab,
+    settingsMail: state.settingsMailSubtab,
+  });
+}
+
+function appRouteToHash(route = getCurrentAppRoute()) {
+  const normalized = normalizeAppRoute(route);
+  const params = new URLSearchParams();
+  params.set("view", normalized.tab);
+
+  if (normalized.tab === "hardware") {
+    params.set("hardware", normalized.hardware);
+  } else if (normalized.tab === "software") {
+    params.set("software", normalized.software);
+  } else if (normalized.tab === "settings") {
+    params.set("settings", normalized.settings);
+    if (normalized.settings === "hardware") params.set("settingsHardware", normalized.settingsHardware);
+    if (normalized.settings === "accounts") params.set("settingsAccounts", normalized.settingsAccounts);
+    if (normalized.settings === "misc") {
+      params.set("settingsMisc", normalized.settingsMisc);
+      if (normalized.settingsMisc === "mail") params.set("settingsMail", normalized.settingsMail);
+    }
+  }
+
+  return `#${params.toString()}`;
+}
+
+function writeAppRoute(options = {}) {
+  const replace = Boolean(options.replace);
+  const route = normalizeAppRoute(options.route || getCurrentAppRoute());
+  const hash = appRouteToHash(route);
+  if (window.location.hash === hash) return;
+
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({ appRoute: route }, "", hash);
+}
+
+async function loadCurrentRouteData() {
+  if (!state.token) return;
+
+  if (state.activeMainTab === "dashboard") {
+    await loadExchangeRateSetting();
+    await loadDashboard();
+    return;
+  }
+
+  if (state.activeMainTab === "hardware") {
+    if (state.hardwareSubtab === "disposed") {
+      await loadDisposedAssets();
+    } else if (state.hardwareSubtab === "assets") {
+      await loadAssets(state.pagination.page);
+    }
+    return;
+  }
+
+  if (state.activeMainTab === "software") {
+    await loadSoftwareLicenses();
+    return;
+  }
+
+  if (state.activeMainTab === "settings") {
+    activateSettingsSubtab(state.settingsSubtab || "hardware");
+    await loadSettingsSubtabData(state.settingsSubtab || "hardware");
+  }
+}
+
+async function applyAppRoute(route = parseAppRouteFromLocation(), options = {}) {
+  const normalized = normalizeAppRoute(route);
+
+  if (normalized.tab === "hardware") {
+    activateHardwareSubtab(normalized.hardware);
+  } else if (normalized.tab === "software") {
+    activateSoftwareSubtab(normalized.software);
+  } else if (normalized.tab === "settings") {
+    state.settingsHardwareSubtab = normalized.settingsHardware;
+    state.settingsAccountsSubtab = normalized.settingsAccounts;
+    state.settingsMiscSubtab = normalized.settingsMisc;
+    state.settingsMailSubtab = normalized.settingsMail;
+    activateTab("settings");
+    activateSettingsSubtab(normalized.settings);
+    if (state.settingsSubtab === "hardware") activateSettingsHardwareSubtab(normalized.settingsHardware);
+    if (state.settingsSubtab === "accounts") activateSettingsAccountsSubtab(normalized.settingsAccounts);
+    if (state.settingsSubtab === "misc") {
+      activateSettingsMiscSubtab(normalized.settingsMisc);
+      if (state.settingsMiscSubtab === "mail") activateSettingsMailSubtab(normalized.settingsMail);
+    }
+  } else {
+    activateTab("dashboard");
+  }
+
+  if (options.syncUrl) {
+    writeAppRoute({ replace: Boolean(options.replace) });
+  }
+
+  if (options.load !== false) {
+    await loadCurrentRouteData();
+  }
 }
 
 function renderSummary(summary) {
@@ -3506,21 +3783,25 @@ function buildLabelsPrintHtml(preview) {
     return start || end || "-";
   };
 
-  const labelsHtml = labels.map((item) => `
-    <article class="sticker">
-      <div class="code-block">
-        <img class="qr" src="${item?.qr_code_data_url || ""}" alt="QR" />
-        <table class="label-info-table">
-                    <tbody>
-            <tr><td>자산코드 ${escapeHtml(item?.asset_code || "-")}</td></tr>
-            <tr><td>사용자 ${escapeHtml(item?.owner || "미지정")}</td></tr>
-            <tr><td>구매일자 ${escapeHtml(item?.purchase_date || "-")}</td></tr>
-            <tr><td>대여일자 ${escapeHtml(getRentalDateText(item))}</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </article>
-  `).join("");
+  const labelsHtml = labels.map((item) => {
+    const isRental = String(item?.usage_type || "").trim() === "대여장비";
+    const returnDate = isRental ? String(item?.rental_end_date || "-") : "-";
+    return `
+      <article class="sticker ${isRental ? "rental" : "standard"}">
+        <div class="code-block">
+          <div class="qr-frame">
+            <img class="qr" src="${item?.qr_code_data_url || ""}" alt="QR" />
+          </div>
+          <div class="label-info">
+            <div class="label-line">${escapeHtml(item?.asset_code || "-")}</div>
+            <div class="label-line">${escapeHtml(item?.owner || "미지정")}</div>
+            <div class="label-line">${escapeHtml(returnDate)}</div>
+            <div class="label-line">POLARISOFFICE</div>
+          </div>
+        </div>
+      </article>
+    `;
+  }).join("");
 
   return `<!doctype html>
 <html lang="ko">
@@ -3529,24 +3810,85 @@ function buildLabelsPrintHtml(preview) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>자산 스티커 미리보기</title>
   <style>
-    body { font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif; margin: 14px; color: #1a2b3f; font-weight: 700; }
+    body { font-family: "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif; margin: 14px; color: #000; font-weight: 700; }
     .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
     .toolbar button { border: none; border-radius: 8px; padding: 8px 12px; background: #1f628f; color: #fff; cursor: pointer; }
     .excluded-box { border: 1px solid #e0c9a3; background: #fff8ec; border-radius: 10px; padding: 10px; margin-bottom: 10px; }
     .excluded-box ul { margin: 8px 0 0; padding-left: 18px; }
-    .sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; align-items: start; }
-    .sticker { border: none; border-radius: 0; padding: 8px; page-break-inside: avoid; }
-    .code-block { display: grid; grid-template-columns: 100px 1fr; gap: 10px; align-items: start; }
-    .qr { display: block; width: 96px; height: 96px; object-fit: contain; border: 1px solid #d9e1ea; border-radius: 4px; }
-    .label-info-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    .label-info-table td { border: 1px solid #d9e1ea; padding: 6px 10px; text-align: left; vertical-align: middle; font-weight: 700; }
+    .sheet { display: grid; grid-template-columns: repeat(auto-fill, minmax(90mm, 1fr)); gap: 10px; align-items: start; }
+    .sticker {
+      width: 90mm;
+      height: 24mm;
+      box-sizing: border-box;
+      overflow: hidden;
+      page-break-inside: avoid;
+      background: #fff;
+      color: #000;
+      padding: 3mm 4.8mm;
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
+    }
+    .code-block {
+      display: grid;
+      grid-template-columns: 18mm 1fr;
+      gap: 5.4mm;
+      align-items: center;
+      width: 100%;
+      height: 100%;
+    }
+    .qr-frame {
+      width: 18mm;
+      height: 18mm;
+      display: grid;
+      place-items: center;
+      background: #fff;
+      overflow: hidden;
+    }
+    .qr { display: block; width: 18mm; height: 18mm; object-fit: contain; }
+    .label-info {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: repeat(4, 1fr);
+      align-items: center;
+      height: 18mm;
+      line-height: 1.02;
+      color: #000;
+      letter-spacing: -0.04em;
+    }
+    .label-line {
+      display: block;
+      max-width: 100%;
+      white-space: nowrap;
+      overflow: visible;
+      text-overflow: clip;
+      color: #000;
+      font-size: 12pt;
+      font-weight: 900;
+    }
     
     @media print {
-      @page { margin: 0; }
-      body { margin: 0; padding: 1mm 1.5mm; }
+      /* Brother PT print preview is used at 55% scale. Author the page at 1 / 0.55
+         so the physical output lands on a 90mm x 24mm label with equal top/bottom margins. */
+      @page { size: 163.64mm 43.64mm; margin: 0; }
+      body { margin: 0; padding: 0; }
       .toolbar { display: none !important; }
-      .sheet { gap: 1.5mm; }
-      .sticker { width: 90mm; padding: 2px; }
+      .sheet { display: block; }
+      .sticker {
+        width: 163.64mm;
+        height: 43.64mm;
+        padding: 10.91mm 8.73mm 1.82mm;
+      }
+      .code-block {
+        grid-template-columns: 30.91mm 1fr;
+        gap: 9.82mm;
+      }
+      .qr-frame,
+      .qr {
+        width: 30.91mm;
+        height: 30.91mm;
+      }
+      .label-info { height: 30.91mm; }
+      .label-line { font-size: 20.8pt; }
     }
   </style>
 </head>
@@ -3655,6 +3997,7 @@ function renderAssetRows() {
     return;
   }
 
+  const canWrite = isAdminUser();
   assetTableBody.innerHTML = state.assets
     .map((asset) => {
       const status = asset.status || "대기";
@@ -3679,16 +4022,16 @@ function renderAssetRows() {
         <td>${escapeHtml(asset.department || "-")}</td>
         <td>${escapeHtml(asset.location || "-")}</td>
         <td>
-          <div class="inline-edit" data-id="${asset.id}">
+          ${canWrite ? `<div class="inline-edit" data-id="${asset.id}">
             <select class="inline-status" data-id="${asset.id}">${makeOptions(statusValues, status)}</select>
             <select class="inline-usage" data-id="${asset.id}">${makeOptions(usageTypeValues, usageType)}</select>
             <button type="button" class="mini-btn apply-inline-btn" data-id="${asset.id}">반영</button>
-          </div>
+          </div>` : '<span class="muted">조회 전용</span>'}
         </td>
         <td>
           <div class="asset-row-actions">
             <button type="button" class="mini-btn label-preview-btn" data-id="${asset.id}">스티커</button>
-            <button type="button" class="mini-btn history-btn" data-id="${asset.id}">이력/수정</button>
+            <button type="button" class="mini-btn history-btn" data-id="${asset.id}">${canWrite ? "이력/수정" : "상세/이력"}</button>
           </div>
         </td>
       </tr>
@@ -3707,9 +4050,16 @@ function renderDisposedRows() {
     return;
   }
 
+  const canWrite = isAdminUser();
   disposedTableBody.innerHTML = state.disposedAssets
     .map((asset) => {
       const disposedAt = asset.disposed_at || asset.updated_at;
+      const actionButtons = canWrite
+        ? `
+              <button type="button" class="mini-btn undispose-btn" data-id="${asset.id}">폐기취소</button>
+              <button type="button" class="mini-btn danger delete-disposed-btn" data-id="${asset.id}">삭제</button>
+            `
+        : "";
       return `
         <tr>
           <td>${escapeHtml(asset.asset_code || "-")}</td>
@@ -3718,8 +4068,7 @@ function renderDisposedRows() {
           <td>
             <div class="disposed-status-cell">
               <span class="status-tag status-${escapeHtml(asset.status || "폐기완료")}">${escapeHtml(asset.status || "폐기완료")}</span>
-              <button type="button" class="mini-btn undispose-btn" data-id="${asset.id}">폐기취소</button>
-              <button type="button" class="mini-btn danger delete-disposed-btn" data-id="${asset.id}">삭제</button>
+              ${actionButtons}
             </div>
           </td>
           <td>${disposedAt ? new Date(disposedAt).toLocaleString() : "-"}</td>
@@ -4218,6 +4567,8 @@ function renderSoftwareRows() {
 
   const today = new Date();
   const todayKey = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString().slice(0, 10);
+  const canWrite = canManageSoftware();
+  const canDelete = isAdminUser();
 
   softwareTableBody.innerHTML = state.softwareLicenses
     .map((row) => {
@@ -4254,8 +4605,10 @@ function renderSoftwareRows() {
           <td>${unassignedQty}</td>
           <td>${escapeHtml(drafterDisplay)}</td>
           <td>
-            <button type="button" class="mini-btn software-edit-btn" data-id="${row.id}">수정</button>
-            <button type="button" class="mini-btn danger software-delete-btn" data-id="${row.id}">삭제</button>
+            ${canWrite ? `
+              <button type="button" class="mini-btn software-edit-btn" data-id="${row.id}">수정</button>
+              ${canDelete ? `<button type="button" class="mini-btn danger software-delete-btn" data-id="${row.id}">삭제</button>` : ""}
+            ` : '<span class="muted">조회 전용</span>'}
           </td>
         </tr>
       `;
@@ -4623,7 +4976,7 @@ function renderSoftwareAssignmentPanel() {
   });
 
   if (!users.length) {
-    softwareAssignUserTableBody.innerHTML = '<tr><td colspan="8">검색 조건에 맞는 사용자가 없습니다.</td></tr>';
+    softwareAssignUserTableBody.innerHTML = '<tr><td colspan="9">검색 조건에 맞는 사용자가 없습니다.</td></tr>';
     return;
   }
 
@@ -4687,7 +5040,7 @@ function renderSoftwareAssignmentPanel() {
           `;
 
       return `
-        <tr>
+        <tr data-license-id="${license.id}" data-username="${escapeHtml(username)}">
           <td>${escapeHtml(username || "-")}</td>
           <td>${escapeHtml(user.display_name || "-")}</td>
           <td>${escapeHtml(user.department || "-")}</td>
@@ -4707,6 +5060,17 @@ function renderSoftwareAssignmentPanel() {
     : '<span class="muted">-</span>'}
           </td>
           <td><span class="software-assign-status ${isAssigned ? "" : "off"}">${isAssigned ? `할당됨${assignedCount > 1 ? ` (${assignedCount})` : ""}` : "미할당"}</span></td>
+          <td>
+            <button
+              type="button"
+              class="mini-btn software-assignment-memo-btn"
+              data-license-id="${license.id}"
+              data-username="${escapeHtml(username)}"
+              data-display-name="${escapeHtml(user.display_name || username || "-")}"
+            >
+              메모
+            </button>
+          </td>
           <td>${actionCell}</td>
         </tr>
       `;
@@ -4714,7 +5078,118 @@ function renderSoftwareAssignmentPanel() {
     .join("");
 }
 
+function ensureSoftwareAssignmentMemoModal() {
+  let modal = document.getElementById("softwareAssignmentMemoModal");
+  if (modal) return modal;
+
+  modal = document.createElement("div");
+  modal.id = "softwareAssignmentMemoModal";
+  modal.className = "modal hidden";
+  modal.innerHTML = `
+    <div class="modal-body memo-thread-modal">
+      <div class="modal-sticky-head">
+        <div>
+          <h3 id="softwareAssignmentMemoTitle">할당 메모</h3>
+          <p id="softwareAssignmentMemoSubtitle" class="muted"></p>
+        </div>
+        <div class="modal-head-actions">
+          <button type="button" class="ghost-btn" data-close="1">닫기</button>
+        </div>
+      </div>
+      <div id="softwareAssignmentMemoThread" class="memo-thread"></div>
+      <form id="softwareAssignmentMemoForm" class="memo-form">
+        <textarea id="softwareAssignmentMemoText" rows="4" placeholder="메모 또는 특이사항을 입력하세요."></textarea>
+        <div class="inline-actions">
+          <button type="submit" class="primary-btn">메모 추가</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal || event.target.closest("[data-close]")) {
+      modal.classList.add("hidden");
+    }
+  });
+
+  modal.querySelector("#softwareAssignmentMemoForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const licenseId = Number(modal.dataset.licenseId || 0);
+    const username = String(modal.dataset.username || "").trim();
+    const memo = String(modal.querySelector("#softwareAssignmentMemoText")?.value || "").trim();
+    if (!licenseId || !username || !memo) {
+      showToast("메모 내용을 입력해주세요.");
+      return;
+    }
+
+    try {
+      await api(`/software-licenses/${licenseId}/assignment-memos`, {
+        method: "POST",
+        body: JSON.stringify({ username, memo }),
+      });
+      modal.querySelector("#softwareAssignmentMemoText").value = "";
+      await loadSoftwareAssignmentMemos(licenseId, username);
+      showToast("메모를 추가했습니다.");
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  return modal;
+}
+
+function renderSoftwareAssignmentMemoThread(rows = []) {
+  const box = document.getElementById("softwareAssignmentMemoThread");
+  if (!box) return;
+
+  if (!rows.length) {
+    box.innerHTML = '<p class="muted">등록된 메모가 없습니다.</p>';
+    return;
+  }
+
+  box.innerHTML = rows
+    .map((row) => `
+      <article class="memo-thread-item">
+        <div class="memo-thread-meta">
+          <strong>${escapeHtml(row.actor_username || "-")}</strong>
+          <span>${row.created_at ? new Date(row.created_at).toLocaleString() : "-"}</span>
+        </div>
+        <div class="memo-thread-body">${escapeHtml(row.memo || "").replace(/\n/g, "<br>")}</div>
+      </article>
+    `)
+    .join("");
+}
+
+async function loadSoftwareAssignmentMemos(licenseId, username) {
+  const params = new URLSearchParams({ username });
+  const rows = await api(`/software-licenses/${licenseId}/assignment-memos?${params.toString()}`);
+  renderSoftwareAssignmentMemoThread(Array.isArray(rows) ? rows : []);
+}
+
+async function openSoftwareAssignmentMemoModal(licenseId, username, displayName = "") {
+  if (!requireSoftwareManagerAction()) return;
+
+  const license = findSoftwareLicenseById(licenseId);
+  const modal = ensureSoftwareAssignmentMemoModal();
+  modal.dataset.licenseId = String(licenseId || "");
+  modal.dataset.username = String(username || "");
+  modal.querySelector("#softwareAssignmentMemoTitle").textContent = "할당 메모";
+  modal.querySelector("#softwareAssignmentMemoSubtitle").textContent = `${license?.product_name || "라이선스"} / ${displayName || username}`;
+  modal.querySelector("#softwareAssignmentMemoText").value = "";
+  renderSoftwareAssignmentMemoThread([]);
+  modal.classList.remove("hidden");
+
+  try {
+    await loadSoftwareAssignmentMemos(licenseId, username);
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
 async function toggleSoftwareAssignment(licenseId, username, action) {
+  if (!canManageSoftware()) throw new Error("관리자 또는 팀장만 변경할 수 있습니다.");
+
   const license = findSoftwareLicenseById(licenseId);
   if (!license) throw new Error("라이선스를 찾을 수 없습니다.");
 
@@ -4761,6 +5236,8 @@ async function toggleSoftwareAssignment(licenseId, username, action) {
 }
 
 async function saveSoftwareAssigneeDetail(licenseId, username, rowElement) {
+  if (!canManageSoftware()) throw new Error("관리자 또는 팀장만 변경할 수 있습니다.");
+
   const license = findSoftwareLicenseById(licenseId);
   if (!license) throw new Error("라이선스를 찾을 수 없습니다.");
 
@@ -5826,8 +6303,7 @@ document.getElementById("loginForm").addEventListener("submit", async (event) =>
     }
     updateAuthView();
     applyRoleTabVisibility();
-    activateTab("dashboard");
-    await refreshDashboardAndAssets();
+    await applyAppRoute(parseAppRouteFromLocation(), { load: true, syncUrl: true, replace: true });
     await refreshUserDataSources();
     if (isAdminUser()) {
       await loadLdapSchedule();
@@ -5858,6 +6334,7 @@ document.getElementById("logoutBtn").addEventListener("click", () => {
   syncAssetSelectionControls();
   updateLdapPasswordStatus();
   closeEditModal();
+  writeAppRoute({ route: { tab: "dashboard" }, replace: true });
   showToast("로그아웃했습니다.");
 });
 
@@ -5867,6 +6344,7 @@ tabs.addEventListener("click", async (event) => {
 
   const tab = button.dataset.tab;
   activateTab(tab);
+  writeAppRoute();
 
   try {
     if (!state.token) return;
@@ -5906,6 +6384,7 @@ hardwareSubtabs?.addEventListener("click", async (event) => {
 
   const subtab = button.dataset.hardwareTab || "assets";
   activateTab(subtab);
+  writeAppRoute();
 
   try {
     if (!state.token) return;
@@ -5925,6 +6404,7 @@ softwareSubtabs?.addEventListener("click", async (event) => {
 
   const subtab = button.dataset.softwareTab || "editor";
   activateSoftwareSubtab(subtab);
+  writeAppRoute();
 
   try {
     if (!state.token) return;
@@ -5945,9 +6425,31 @@ settingsSubtabs?.addEventListener("click", async (event) => {
   }
 
   activateSettingsSubtab(subtab);
+  writeAppRoute();
 
   try {
     await loadSettingsSubtabData(subtab);
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
+settingsHardwareSubtabs?.addEventListener("click", async (event) => {
+  const button = event.target.closest(".subtab-btn[data-settings-hardware-tab]");
+  if (!button) return;
+
+  const subtab = button.dataset.settingsHardwareTab || "code";
+  if (button.dataset.adminOnly === "1" && !isAdminUser()) {
+    showToast("관리자 권한이 필요합니다.");
+    activateSettingsHardwareSubtab("code");
+    return;
+  }
+
+  activateSettingsHardwareSubtab(subtab);
+  writeAppRoute();
+
+  try {
+    await loadSettingsSubtabData("hardware");
   } catch (error) {
     showToast(error.message);
   }
@@ -5964,6 +6466,7 @@ settingsAccountsSubtabs?.addEventListener("click", async (event) => {
 
   const subtab = button.dataset.settingsAccountsTab || "users";
   activateSettingsAccountsSubtab(subtab);
+  writeAppRoute();
 
   try {
     await loadSettingsSubtabData("accounts");
@@ -5984,6 +6487,7 @@ settingsMiscSubtabs?.addEventListener("click", async (event) => {
 
   const subtab = button.dataset.settingsMiscTab || "ldap";
   activateSettingsMiscSubtab(subtab);
+  writeAppRoute();
 
   try {
     await loadSettingsSubtabData("misc");
@@ -6004,6 +6508,7 @@ settingsMailSubtabs?.addEventListener("click", async (event) => {
 
   const subtab = button.dataset.settingsMailTab || "smtp";
   activateSettingsMailSubtab(subtab);
+  writeAppRoute();
 
   try {
     await loadSettingsSubtabData("misc");
@@ -6161,6 +6666,10 @@ document.getElementById("softwareForm")?.addEventListener("submit", async (event
   event.preventDefault();
 
   try {
+    if (!canManageSoftware()) {
+      throw new Error("관리자 또는 팀장만 변경할 수 있습니다.");
+    }
+
     const payload = readSoftwareFormPayload();
     const id = Number(document.getElementById("swId")?.value || 0);
     let targetLicenseId = id;
@@ -6314,6 +6823,23 @@ document.getElementById("softwareAssignSearch")?.addEventListener("input", () =>
 });
 
 softwareAssignUserTableBody?.addEventListener("click", async (event) => {
+  if (!canManageSoftware()) {
+    if (event.target.closest(".software-assignment-save-btn, .software-assignment-action-btn, .software-assignment-memo-btn")) {
+      showToast("관리자 또는 팀장만 변경할 수 있습니다.");
+    }
+    return;
+  }
+
+  const memoButton = event.target.closest(".software-assignment-memo-btn");
+  if (memoButton) {
+    await openSoftwareAssignmentMemoModal(
+      Number(memoButton.dataset.licenseId || 0),
+      memoButton.dataset.username || "",
+      memoButton.dataset.displayName || "",
+    );
+    return;
+  }
+
   const saveButton = event.target.closest(".software-assignment-save-btn");
   if (saveButton) {
     const licenseId = Number(saveButton.dataset.licenseId || 0);
@@ -6346,6 +6872,7 @@ softwareAssignUserTableBody?.addEventListener("click", async (event) => {
 softwareTableBody?.addEventListener("click", async (event) => {
   const editBtn = event.target.closest(".software-edit-btn");
   if (editBtn) {
+    if (!requireSoftwareManagerAction()) return;
     const id = Number(editBtn.dataset.id || 0);
     const row = findSoftwareLicenseById(id);
     if (!row) return;
@@ -6362,6 +6889,7 @@ softwareTableBody?.addEventListener("click", async (event) => {
 
   const deleteBtn = event.target.closest(".software-delete-btn");
   if (deleteBtn) {
+    if (!requireAdminAction()) return;
     const id = Number(deleteBtn.dataset.id || 0);
     if (!id) return;
 
@@ -6382,9 +6910,12 @@ softwareTableBody?.addEventListener("click", async (event) => {
 
   const id = Number(row.dataset.licenseId || 0);
   if (!id) return;
+  if (!canManageSoftware()) return;
   openSoftwareAssignmentForLicense(id);
 });
 softwareAssignedTableBody?.addEventListener("click", (event) => {
+  if (!canManageSoftware()) return;
+
   const row = event.target.closest("tr[data-license-id]");
   if (!row) return;
 
@@ -6684,6 +7215,48 @@ orgChartToggleDeptExpandBtn?.addEventListener("click", () => {
   renderOrgChart(state.managedUsers || []);
 });
 
+orgChartBoard?.addEventListener("click", async (event) => {
+  const toggleBtn = event.target.closest(".org-leader-toggle-btn");
+  if (!toggleBtn) return;
+
+  if (!isAdminUser()) {
+    showToast("관리자만 리더 권한을 변경할 수 있습니다.");
+    return;
+  }
+
+  const userId = Number(toggleBtn.dataset.id || 0);
+  if (!userId) return;
+
+  const currentFlag = toggleBtn.dataset.isLeader === "1";
+  const nextFlag = !currentFlag;
+  const displayName = String(toggleBtn.dataset.displayName || "").trim();
+
+  try {
+    const updated = await api(`/directory-users/${userId}`, {
+      method: "PUT",
+      body: JSON.stringify({ is_leader: nextFlag }),
+    });
+
+    const applyUpdate = (rows) =>
+      Array.isArray(rows)
+        ? rows.map((row) => (Number(row?.id || 0) === userId ? { ...row, ...updated } : row))
+        : rows;
+
+    state.managedUsers = applyUpdate(state.managedUsers);
+    state.directoryUsers = applyUpdate(state.directoryUsers);
+
+    renderUsersTable("user");
+    renderUsersTable("user-inactive");
+    renderOrgChart(state.managedUsers || []);
+    renderDirectoryUserDatalist();
+
+    const targetName = displayName || String(updated?.display_name || updated?.username || "");
+    showToast(`${targetName || "사용자"} 수동 리더 권한을 ${nextFlag ? "부여" : "해제"}했습니다.`);
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
 document.getElementById("userFilterForm")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -6771,6 +7344,34 @@ document.getElementById("adminCreateForm")?.addEventListener("submit", async (ev
 
 [usersTableBody, inactiveUsersTableBody, adminsTableBody].forEach((tableBody) => {
   tableBody?.addEventListener("click", async (event) => {
+    const saveAdminPasswordBtn = event.target.closest(".admin-password-save-btn");
+    if (saveAdminPasswordBtn) {
+      const userId = Number(saveAdminPasswordBtn.dataset.id || 0);
+      if (!userId) return;
+
+      const row = saveAdminPasswordBtn.closest("tr");
+      const passwordInput = row?.querySelector(".admin-password-inline");
+      const password = String(passwordInput?.value || "");
+      if (password.length < 8) {
+        showToast("새 비밀번호는 8자 이상이어야 합니다.");
+        return;
+      }
+
+      try {
+        await api(`/users/${userId}`, {
+          method: "PUT",
+          body: JSON.stringify({ password }),
+        });
+
+        if (passwordInput) passwordInput.value = "";
+        await loadManagedUsers("admin", document.getElementById("adminSearchQ")?.value || "");
+        showToast("관리자 비밀번호를 변경했습니다.");
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
+
     const saveOrgBtn = event.target.closest(".user-org-save-btn");
     if (saveOrgBtn) {
       const userId = Number(saveOrgBtn.dataset.id || 0);
@@ -6855,6 +7456,7 @@ document.getElementById("adminCreateForm")?.addEventListener("submit", async (ev
 
     try {
       await handleDashboardMetricClick(kind, value);
+      writeAppRoute();
     } catch (error) {
       showToast(error.message);
     }
@@ -6938,6 +7540,8 @@ disposedTableBody.addEventListener("click", async (event) => {
   const cancelBtn = event.target.closest(".undispose-btn");
   const deleteBtn = event.target.closest(".delete-disposed-btn");
   if (!cancelBtn && !deleteBtn) return;
+
+  if (!requireAdminAction()) return;
 
   const targetButton = cancelBtn || deleteBtn;
   const assetId = Number(targetButton.dataset.id);
@@ -7484,6 +8088,7 @@ assetTableBody.addEventListener("click", async (event) => {
   const applyInlineBtn = event.target.closest(".apply-inline-btn");
   if (applyInlineBtn) {
     event.stopPropagation();
+    if (!requireAdminAction()) return;
     try {
       await applyInlineUpdate(Number(applyInlineBtn.dataset.id));
     } catch (error) {
@@ -7531,6 +8136,8 @@ assetTableBody.addEventListener("click", async (event) => {
 
 document.getElementById("editAssetForm").addEventListener("submit", async (event) => {
   event.preventDefault();
+
+  if (!requireAdminAction()) return;
 
   if (!state.currentAssetId) {
     showToast("수정할 자산을 다시 선택해주세요.");
@@ -7587,8 +8194,7 @@ async function initialize() {
     state.user = await api("/me");
     updateAuthView();
     applyRoleTabVisibility();
-    activateTab("dashboard");
-    await refreshDashboardAndAssets();
+    await applyAppRoute(parseAppRouteFromLocation(), { load: true, syncUrl: true, replace: true });
     await refreshUserDataSources();
     if (isAdminUser()) {
       await loadLdapSchedule();
@@ -7602,7 +8208,28 @@ async function initialize() {
   }
 }
 
+window.addEventListener("popstate", async () => {
+  if (!state.token || !state.user) return;
+  try {
+    await applyAppRoute(parseAppRouteFromLocation(), { load: true, syncUrl: false });
+  } catch (error) {
+    showToast(error.message);
+  }
+});
+
 initialize();
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

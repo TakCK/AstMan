@@ -1,6 +1,13 @@
 ﻿from sqlalchemy.orm import Session
 
 from .. import crud, models, schemas
+from . import access_scope_service
+
+
+def _scope_filters(access_scope: access_scope_service.UserAccessScope | None) -> tuple[set[int] | None, set[str] | None]:
+    if not access_scope or access_scope.is_admin:
+        return None, None
+    return access_scope.subordinate_org_unit_ids, access_scope.asset_owner_values
 
 
 def to_asset_response(db: Session, asset: models.Asset) -> schemas.AssetResponse:
@@ -49,7 +56,7 @@ def to_asset_response(db: Session, asset: models.Asset) -> schemas.AssetResponse
     return schemas.AssetResponse.model_validate(payload)
 
 
-def create_asset(db: Session, payload: schemas.AssetCreate, actor: models.User) -> schemas.AssetResponse:
+def create_asset(db: Session, payload: schemas.AssetCreate, actor: models.AppAccount) -> schemas.AssetResponse:
     db_asset = crud.create_asset(db, payload, actor=actor)
     return to_asset_response(db, db_asset)
 
@@ -69,7 +76,9 @@ def list_assets(
     warranty_expiring_days: int | None = None,
     warranty_overdue: bool = False,
     rental_expiring_days: int | None = None,
+    access_scope: access_scope_service.UserAccessScope | None = None,
 ) -> list[schemas.AssetResponse]:
+    allowed_org_unit_ids, allowed_owner_values = _scope_filters(access_scope)
     rows = crud.list_assets(
         db,
         skip=skip,
@@ -84,16 +93,34 @@ def list_assets(
         warranty_expiring_days=warranty_expiring_days,
         warranty_overdue=warranty_overdue,
         rental_expiring_days=rental_expiring_days,
+        allowed_org_unit_ids=allowed_org_unit_ids,
+        allowed_owner_values=allowed_owner_values,
     )
     return [to_asset_response(db, row) for row in rows]
 
 
-def get_asset(db: Session, asset_id: int) -> models.Asset | None:
-    return crud.get_asset(db, asset_id)
+def get_asset(
+    db: Session,
+    asset_id: int,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
+) -> models.Asset | None:
+    allowed_org_unit_ids, allowed_owner_values = _scope_filters(access_scope)
+    return crud.get_asset(
+        db,
+        asset_id,
+        allowed_org_unit_ids=allowed_org_unit_ids,
+        allowed_owner_values=allowed_owner_values,
+    )
 
 
-def get_asset_response(db: Session, asset_id: int) -> schemas.AssetResponse | None:
-    db_asset = crud.get_asset(db, asset_id)
+def get_asset_response(
+    db: Session,
+    asset_id: int,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
+) -> schemas.AssetResponse | None:
+    db_asset = get_asset(db, asset_id, access_scope=access_scope)
     if not db_asset:
         return None
     return to_asset_response(db, db_asset)
@@ -103,9 +130,11 @@ def update_asset(
     db: Session,
     asset_id: int,
     payload: schemas.AssetUpdate,
-    actor: models.User,
+    actor: models.AppAccount,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
 ) -> schemas.AssetResponse | None:
-    db_asset = crud.get_asset(db, asset_id)
+    db_asset = get_asset(db, asset_id, access_scope=access_scope)
     if not db_asset:
         return None
     db_asset = crud.update_asset(db, db_asset, payload, actor=actor)
@@ -116,9 +145,11 @@ def assign_asset(
     db: Session,
     asset_id: int,
     payload: schemas.AssetAssignRequest,
-    actor: models.User,
+    actor: models.AppAccount,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
 ) -> schemas.AssetResponse | None:
-    db_asset = crud.get_asset(db, asset_id)
+    db_asset = get_asset(db, asset_id, access_scope=access_scope)
     if not db_asset:
         return None
     db_asset = crud.assign_asset(db, db_asset, actor=actor, payload=payload)
@@ -129,9 +160,11 @@ def return_asset(
     db: Session,
     asset_id: int,
     payload: schemas.AssetReturnRequest,
-    actor: models.User,
+    actor: models.AppAccount,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
 ) -> schemas.AssetResponse | None:
-    db_asset = crud.get_asset(db, asset_id)
+    db_asset = get_asset(db, asset_id, access_scope=access_scope)
     if not db_asset:
         return None
     db_asset = crud.return_asset(db, db_asset, actor=actor, payload=payload)
@@ -142,9 +175,11 @@ def mark_disposal_required(
     db: Session,
     asset_id: int,
     payload: schemas.AssetStatusChangeRequest,
-    actor: models.User,
+    actor: models.AppAccount,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
 ) -> schemas.AssetResponse | None:
-    db_asset = crud.get_asset(db, asset_id)
+    db_asset = get_asset(db, asset_id, access_scope=access_scope)
     if not db_asset:
         return None
     db_asset = crud.mark_disposal_required(db, db_asset, actor=actor, payload=payload)
@@ -155,17 +190,25 @@ def mark_disposed(
     db: Session,
     asset_id: int,
     payload: schemas.AssetStatusChangeRequest,
-    actor: models.User,
+    actor: models.AppAccount,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
 ) -> schemas.AssetResponse | None:
-    db_asset = crud.get_asset(db, asset_id)
+    db_asset = get_asset(db, asset_id, access_scope=access_scope)
     if not db_asset:
         return None
     db_asset = crud.mark_disposed(db, db_asset, actor=actor, payload=payload)
     return to_asset_response(db, db_asset)
 
 
-def delete_asset(db: Session, asset_id: int, actor: models.User) -> bool:
-    db_asset = crud.get_asset(db, asset_id)
+def delete_asset(
+    db: Session,
+    asset_id: int,
+    actor: models.AppAccount,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
+) -> bool:
+    db_asset = get_asset(db, asset_id, access_scope=access_scope)
     if not db_asset:
         return False
 
@@ -176,7 +219,16 @@ def delete_asset(db: Session, asset_id: int, actor: models.User) -> bool:
     return True
 
 
-def list_asset_history(db: Session, asset_id: int, limit: int = 100):
+def list_asset_history(
+    db: Session,
+    asset_id: int,
+    limit: int = 100,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
+):
+    db_asset = get_asset(db, asset_id, access_scope=access_scope)
+    if not db_asset:
+        return []
     return crud.list_asset_history(db, asset_id=asset_id, limit=limit)
 
 

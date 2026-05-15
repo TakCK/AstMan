@@ -3,9 +3,13 @@ from sqlalchemy.orm import Session
 
 from .. import crud, models, schemas, security
 from ..database import get_db
-from ..services import ldap_service, user_service
+from ..services import access_scope_service, ldap_service, user_service
 
 router = APIRouter()
+
+
+def _scope(db: Session, current_user: models.AppAccount) -> access_scope_service.UserAccessScope:
+    return access_scope_service.build_user_access_scope(db, current_user)
 
 
 @router.get("/directory-users", response_model=list[schemas.DirectoryUserResponse], summary="동기화 사용자 목록", tags=["LDAP"])
@@ -15,14 +19,16 @@ def list_directory_users(
     include_inactive: bool = False,
     org_unit_id: int | None = None,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
+    scope = _scope(db, current_user)
     return user_service.list_directory_users(
         db,
         q=q,
         limit=limit,
         include_inactive=include_inactive,
         org_unit_id=org_unit_id,
+        allowed_usernames=None if scope.is_admin else scope.subordinate_usernames,
     )
 
 
@@ -30,7 +36,7 @@ def list_directory_users(
 def create_directory_user(
     payload: schemas.DirectoryUserCreate,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
         return user_service.create_directory_user(db, payload, source="manual")
@@ -47,7 +53,7 @@ def update_directory_user(
     directory_user_id: int,
     payload: schemas.DirectoryUserUpdate,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
         row = user_service.update_directory_user(db, directory_user_id, payload)
@@ -73,7 +79,7 @@ def update_directory_user(
 def preview_directory_user_deactivation(
     directory_user_id: int,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     preview = user_service.build_directory_user_deactivation_preview(db, directory_user_id)
     if not preview:
@@ -91,7 +97,7 @@ def deactivate_directory_user(
     directory_user_id: int,
     payload: schemas.DirectoryUserDeactivateRequest,
     db: Session = Depends(get_db),
-    current_admin: models.User = Depends(security.get_current_admin),
+    current_admin: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
         result = user_service.deactivate_directory_user(db, directory_user_id, payload, current_admin)
@@ -124,7 +130,7 @@ def deactivate_directory_user(
 def import_directory_users(
     payload: schemas.DirectoryUserBulkImportRequest,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     return user_service.import_directory_users(db, payload, source="ldap")
 
@@ -132,7 +138,7 @@ def import_directory_users(
 @router.post("/ldap/test", summary="LDAP 연결 테스트", tags=["LDAP"])
 def ldap_test(
     payload: schemas.LdapTestRequest,
-    _: models.User = Depends(security.get_current_user),
+    _: models.AppAccount = Depends(security.get_current_user),
 ):
     return ldap_service.ldap_test(payload)
 
@@ -140,7 +146,7 @@ def ldap_test(
 @router.post("/ldap/search", response_model=schemas.LdapSearchResponse, summary="LDAP 사용자 검색", tags=["LDAP"])
 def ldap_search(
     payload: schemas.LdapSearchRequest,
-    _: models.User = Depends(security.get_current_user),
+    _: models.AppAccount = Depends(security.get_current_user),
 ):
     return ldap_service.ldap_search(payload)
 
@@ -149,7 +155,7 @@ def ldap_search(
 def ldap_sync_now(
     payload: schemas.LdapSyncNowRequest,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     return ldap_service.ldap_sync_now(payload, db)
 
@@ -157,7 +163,7 @@ def ldap_sync_now(
 @router.get("/ldap/sync-schedule", response_model=schemas.LdapSyncScheduleResponse, summary="LDAP 동기화 스케줄 조회", tags=["LDAP"])
 def get_ldap_sync_schedule(
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     return ldap_service._build_sync_schedule_response(db)
 
@@ -166,7 +172,7 @@ def get_ldap_sync_schedule(
 def set_ldap_sync_schedule(
     payload: schemas.LdapSyncScheduleRequest,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     schedule = ldap_service._sanitize_sync_schedule(payload.model_dump(exclude={"bind_password"}))
     crud.set_app_setting(db, ldap_service.LDAP_SYNC_SCHEDULE_KEY, schedule)

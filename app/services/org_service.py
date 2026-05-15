@@ -1,4 +1,5 @@
 ﻿from collections import Counter, defaultdict
+import re
 from typing import Any
 
 from sqlalchemy import func, or_
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from .. import crud, models, schemas
 
 DISPOSED_STATUS_VALUES = {"폐기완료", "disposed", "disposal_done"}
+GARBLED_ORG_NAME_PATTERN = re.compile(r"^\?+(?:_[0-9A-Za-z]+)?$")
 
 
 class OrgUnitDeactivationBlockedError(ValueError):
@@ -25,6 +27,95 @@ def _active_asset_filter():
 
 def _normalize_text(value: str | None) -> str:
     return str(value or "").strip()
+
+
+def _is_garbled_org_name(name: str | None) -> bool:
+    return bool(GARBLED_ORG_NAME_PATTERN.fullmatch(_normalize_text(name)))
+
+
+def _collect_department_org_candidates(db: Session) -> list[str]:
+    candidates: set[str] = set()
+
+    user_rows = (
+        db.query(models.DirectoryUser.department)
+        .filter(models.DirectoryUser.department.is_not(None))
+        .filter(models.DirectoryUser.department != "")
+        .all()
+    )
+    for (department,) in user_rows:
+        name = _normalize_text(department)
+        if name and not _is_garbled_org_name(name):
+            candidates.add(name)
+
+    asset_rows = (
+        db.query(models.Asset.department)
+        .filter(models.Asset.department.is_not(None))
+        .filter(models.Asset.department != "")
+        .all()
+    )
+    for (department,) in asset_rows:
+        name = _normalize_text(department)
+        if name and not _is_garbled_org_name(name):
+            candidates.add(name)
+
+    return sorted(candidates)
+
+
+def _has_org_unit_links(db: Session, org_unit_id: int) -> bool:
+    has_parent_child = (
+        db.query(models.OrganizationUnit.id)
+        .filter(models.OrganizationUnit.parent_id == int(org_unit_id))
+        .first()
+        is not None
+    )
+    if has_parent_child:
+        return True
+
+    has_users = (
+        db.query(models.DirectoryUser.id)
+        .filter(models.DirectoryUser.org_unit_id == int(org_unit_id))
+        .first()
+        is not None
+    )
+    if has_users:
+        return True
+
+    has_assets = (
+        db.query(models.Asset.id)
+        .filter(models.Asset.org_unit_id == int(org_unit_id))
+        .first()
+        is not None
+    )
+    return has_assets
+
+
+def _repair_org_units_for_display(db: Session) -> None:
+    rows = crud.list_org_units(db, include_inactive=True)
+    valid_active_exists = any(bool(row.is_active) and not _is_garbled_org_name(row.name) for row in rows)
+    changed = False
+
+    if not valid_active_exists:
+        existing_name_keys = {_normalize_text(row.name).casefold() for row in rows if _normalize_text(row.name)}
+        for name in _collect_department_org_candidates(db):
+            key = name.casefold()
+            if key in existing_name_keys:
+                continue
+            db.add(models.OrganizationUnit(name=name, is_active=True, sort_order=0))
+            existing_name_keys.add(key)
+            changed = True
+
+    for row in rows:
+        if not bool(row.is_active):
+            continue
+        if not _is_garbled_org_name(row.name):
+            continue
+        if _has_org_unit_links(db, int(row.id)):
+            continue
+        row.is_active = False
+        changed = True
+
+    if changed:
+        db.commit()
 
 
 def _build_parent_map(db: Session) -> dict[int, int | None]:
@@ -145,6 +236,7 @@ def _get_transfer_target_org(
 
 
 def list_org_units(db: Session, include_inactive: bool = True) -> list[schemas.OrganizationUnitResponse]:
+    _repair_org_units_for_display(db)
     rows = crud.list_org_units(db, include_inactive=include_inactive)
     parent_name_map = _build_org_parent_name_map(db)
     active_child_count_map, active_user_count_map, active_asset_count_map = _build_org_stats_maps(db)
@@ -464,3 +556,9 @@ def build_org_data_integrity_report(db: Session) -> dict[str, Any]:
         "ldap_department_unmapped": ldap_department_unmapped,
         "ldap_department_unmapped_by_department": ldap_unmapped_by_department,
     }
+
+
+
+
+
+

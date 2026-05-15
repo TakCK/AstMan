@@ -7,9 +7,13 @@ from sqlalchemy.orm import Session
 
 from .. import crud, models, schemas, security
 from ..database import get_db
-from ..services import report_service
+from ..services import access_scope_service, report_service
 
 router = APIRouter()
+
+
+def _scope(db: Session, current_user: models.AppAccount) -> access_scope_service.UserAccessScope:
+    return access_scope_service.build_user_access_scope(db, current_user)
 
 
 @router.get("/health", summary="헬스 체크", tags=["대시보드"])
@@ -20,9 +24,18 @@ def health_check():
 @router.get("/dashboard/summary", response_model=schemas.DashboardSummaryResponse, summary="자산 현황 요약", tags=["대시보드"])
 def dashboard_summary(
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
-    return crud.get_dashboard_summary(db)
+    scope = _scope(db, current_user)
+    if scope.is_admin:
+        return crud.get_dashboard_summary(db)
+
+    return crud.get_dashboard_summary(
+        db,
+        allowed_org_unit_ids=scope.subordinate_org_unit_ids,
+        allowed_owner_values=scope.asset_owner_values,
+        allowed_software_usernames=scope.subordinate_usernames,
+    )
 
 
 @router.get(
@@ -34,9 +47,15 @@ def dashboard_summary(
 def dashboard_software_cost_summary(
     scope_filter: str = "all",
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
-    return report_service.build_dashboard_software_cost_summary(db, scope_filter=scope_filter)
+    scope = _scope(db, current_user)
+    allowed_usernames = None if scope.is_admin else scope.subordinate_usernames
+    return report_service.build_dashboard_software_cost_summary(
+        db,
+        scope_filter=scope_filter,
+        allowed_usernames=allowed_usernames,
+    )
 
 
 @router.post(
@@ -48,7 +67,7 @@ def dashboard_software_cost_summary(
 def create_software_cost_snapshot(
     payload: schemas.SoftwareCostSnapshotCreateRequest,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
         return report_service.create_software_cost_snapshot(
@@ -75,7 +94,7 @@ def list_software_cost_snapshots(
     snapshot_month_to: date | None = None,
     limit: int = 500,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    _: models.AppAccount = Depends(security.get_current_user),
 ):
     return report_service.list_software_cost_snapshots(
         db,
@@ -89,9 +108,12 @@ def list_software_cost_snapshots(
 @router.get("/dashboard/reports/general-licenses.xlsx", summary="일반 라이선스/구독 현황 보고서 다운로드", tags=["대시보드"])
 def download_general_license_report(
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
-    report_data = report_service.build_general_license_report_data(db)
+    scope = _scope(db, current_user)
+    allowed_usernames = None if scope.is_admin else scope.subordinate_usernames
+
+    report_data = report_service.build_general_license_report_data(db, allowed_usernames=allowed_usernames)
     workbook = report_service.create_general_license_report_workbook(report_data)
 
     buffer = BytesIO()
@@ -113,9 +135,12 @@ def download_general_license_report(
 @router.get("/dashboard/reports/general-licenses.csv", summary="일반 라이선스/구독 현황 CSV 다운로드", tags=["대시보드"])
 def download_general_license_report_csv(
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
-    report_data = report_service.build_general_license_report_data(db)
+    scope = _scope(db, current_user)
+    allowed_usernames = None if scope.is_admin else scope.subordinate_usernames
+
+    report_data = report_service.build_general_license_report_data(db, allowed_usernames=allowed_usernames)
     csv_text = report_service.create_general_license_report_csv(report_data)
     filename = f"general_license_report_{date.today().strftime('%Y%m%d')}.csv"
 
@@ -129,9 +154,12 @@ def download_general_license_report_csv(
 @router.get("/dashboard/reports/general-licenses.html", summary="일반 라이선스/구독 현황 HTML 다운로드", tags=["대시보드"])
 def download_general_license_report_html(
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_user),
+    current_user: models.AppAccount = Depends(security.get_current_user),
 ):
-    report_data = report_service.build_general_license_report_data(db)
+    scope = _scope(db, current_user)
+    allowed_usernames = None if scope.is_admin else scope.subordinate_usernames
+
+    report_data = report_service.build_general_license_report_data(db, allowed_usernames=allowed_usernames)
     html_text = report_service.create_general_license_report_html(report_data)
     filename = f"general_license_report_{date.today().strftime('%Y%m%d')}.html"
 
@@ -140,3 +168,5 @@ def download_general_license_report_html(
         media_type="text/html; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+

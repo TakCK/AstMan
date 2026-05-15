@@ -6,7 +6,7 @@ from qrcode.image.svg import SvgPathImage
 from sqlalchemy.orm import Session
 
 from .. import crud, models
-from . import branding_service
+from . import access_scope_service, branding_service
 
 
 def _to_data_url(raw: bytes, mime_type: str) -> str:
@@ -32,6 +32,12 @@ def _build_qr_data_url(content: str) -> str:
 
 def _normalize_owner(value: str | None) -> str:
     return str(value or "").strip()
+
+
+def _asset_scope_filters(access_scope: access_scope_service.UserAccessScope | None) -> tuple[set[int] | None, set[str] | None]:
+    if not access_scope or access_scope.is_admin:
+        return None, None
+    return access_scope.subordinate_org_unit_ids, access_scope.asset_owner_values
 
 
 def _build_owner_display_name_map(db: Session, assets: list[models.Asset]) -> dict[str, str]:
@@ -81,6 +87,7 @@ def _build_label_item(asset: models.Asset, owner_display_name: str) -> tuple[dic
         "asset_id": asset.id,
         "asset_name": asset_name,
         "asset_code": asset_code,
+        "usage_type": str(asset.usage_type or "").strip(),
         "owner": owner_display_name,
         "purchase_date": asset.purchase_date,
         "rental_start_date": asset.rental_start_date,
@@ -98,9 +105,20 @@ def _labels_response_base(db: Session) -> dict:
     }
 
 
-def get_asset_label_preview(db: Session, asset_id: int) -> dict:
+def get_asset_label_preview(
+    db: Session,
+    asset_id: int,
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
+) -> dict:
     response = _labels_response_base(db)
-    asset = crud.get_asset(db, asset_id)
+    allowed_org_unit_ids, allowed_owner_values = _asset_scope_filters(access_scope)
+    asset = crud.get_asset(
+        db,
+        asset_id,
+        allowed_org_unit_ids=allowed_org_unit_ids,
+        allowed_owner_values=allowed_owner_values,
+    )
     if not asset:
         response["excluded"].append(
             {
@@ -122,7 +140,12 @@ def get_asset_label_preview(db: Session, asset_id: int) -> dict:
     return response
 
 
-def get_assets_label_preview(db: Session, asset_ids: list[int]) -> dict:
+def get_assets_label_preview(
+    db: Session,
+    asset_ids: list[int],
+    *,
+    access_scope: access_scope_service.UserAccessScope | None = None,
+) -> dict:
     response = _labels_response_base(db)
 
     normalized_ids: list[int] = []
@@ -140,11 +163,16 @@ def get_assets_label_preview(db: Session, asset_ids: list[int]) -> dict:
     if not normalized_ids:
         return response
 
-    rows = (
-        db.query(models.Asset)
-        .filter(models.Asset.id.in_(normalized_ids))
-        .all()
+    allowed_org_unit_ids, allowed_owner_values = _asset_scope_filters(access_scope)
+
+    rows_query = db.query(models.Asset).filter(models.Asset.id.in_(normalized_ids))
+    rows_query = crud._apply_asset_access_scope_filter(
+        rows_query,
+        allowed_org_unit_ids=allowed_org_unit_ids,
+        allowed_owner_values=allowed_owner_values,
     )
+    rows = rows_query.all()
+
     row_map = {int(row.id): row for row in rows}
     owner_map = _build_owner_display_name_map(db, rows)
 
@@ -168,3 +196,4 @@ def get_assets_label_preview(db: Session, asset_ids: list[int]) -> dict:
             response["excluded"].append(excluded)
 
     return response
+

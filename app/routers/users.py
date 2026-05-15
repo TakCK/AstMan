@@ -12,7 +12,7 @@ router = APIRouter()
 def create_user(
     payload: schemas.UserCreate,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
         return user_service.create_user(db, payload)
@@ -28,7 +28,7 @@ def list_users(
     q: str | None = None,
     limit: int = 200,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
         return user_service.list_users(db, role=role, q=q, limit=limit)
@@ -43,7 +43,7 @@ def update_user_admin(
     user_id: int,
     payload: schemas.UserAdminUpdate,
     db: Session = Depends(get_db),
-    _: models.User = Depends(security.get_current_admin),
+    _: models.AppAccount = Depends(security.get_current_admin),
 ):
     try:
         updated = user_service.update_user_admin(db, user_id, payload)
@@ -56,3 +56,5 @@ def update_user_admin(
         raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
 
     return updated
+
+
